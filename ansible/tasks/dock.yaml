@@ -44,11 +44,12 @@
     - /Applications/Warp.app
     - /Applications/Xcode.app
     - /Applications/Figma.app
-    - "'' --type spacer --section apps --after Figma"
-    - /Applications/Codex.app
+    - /Applications/Bruno.app
+    - "'' --type spacer --section apps --after Bruno"
     - /Applications/ChatGPT.app
-    - /Applications/Spokenly.app
-    - "'' --type spacer --section apps --after Spokenly"
+    - /Applications/FluidVoice.app
+    - "'/Applications/Open Design.app'"
+    - "'' --type spacer --section apps --after 'Open Design'"
     - /Applications/Safari.app
     - /Applications/Helium.app
     - "'' --type spacer --section apps --after Helium"
@@ -56,13 +57,15 @@
     - /Applications/Notion.app
     - /Applications/Obsidian.app
     - /Applications/1Password.app
-    - "'' --type spacer --section apps --after 1Password"
+    - /Applications/Things3.app
+    - "'' --type spacer --section apps --after Things"
     - /System/Applications/Mail.app
     - "'/Applications/Proton Mail.app'"
     - /System/Applications/Calendar.app
     - "'' --type spacer --section apps --after Calendar"
     - /System/Applications/Messages.app
     - /Applications/Slack.app
+    - /Applications/GatherV2.app
     - /Applications/Discord.app
     - "'' --type spacer --section apps --after Discord"
     - /System/Applications/Music.app
