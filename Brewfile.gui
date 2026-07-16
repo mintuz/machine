@@ -27,11 +27,13 @@ cask "httpie", greedy: true
 cask "warp", greedy: true
 cask "ghostty", greedy: true
 cask "cursor", greedy: true
+cask "bruno", greedy: true
 
 # AI assistants
 cask "chatgpt", greedy: true
 cask "codex-app", greedy: true
 cask "claude-code", greedy: true
+cask "fluidvoice", greedy: true
 
 # Browsers
 cask "firefox", greedy: true
