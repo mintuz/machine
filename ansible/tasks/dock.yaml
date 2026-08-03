@@ -47,7 +47,7 @@
     - /Applications/Bruno.app
     - "'' --type spacer --section apps --after Bruno"
     - /Applications/ChatGPT.app
-    - /Applications/FluidVoice.app
+    - /Applications/Claude.app
     - "'/Applications/Open Design.app'"
     - "'' --type spacer --section apps --after 'Open Design'"
     - /Applications/Safari.app
