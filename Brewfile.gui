@@ -13,6 +13,7 @@ cask "bartender", greedy: true
 cask "rcmd", greedy: true
 cask "hammerspoon", greedy: true
 cask "raycast", greedy: true
+cask "thaw", greedy: true
 
 # Privacy, security, and authentication
 cask "protonvpn", greedy: true
@@ -27,12 +28,14 @@ cask "httpie", greedy: true
 cask "warp", greedy: true
 cask "ghostty", greedy: true
 cask "cursor", greedy: true
+cask "docker-desktop", greedy: true
 cask "bruno", greedy: true
 
 # AI assistants
 cask "chatgpt", greedy: true
 cask "codex-app", greedy: true
-cask "claude-code", greedy: true
+cask "claude", greedy: true
+cask "claude-code@latest", greedy: true
 cask "fluidvoice", greedy: true
 
 # Browsers
