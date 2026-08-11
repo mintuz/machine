@@ -59,4 +59,5 @@ brew "glances"
 # AI and app CLIs
 cask "codex"
 brew "opencode"
+brew "herdr"
 cask "notion-cli"
