@@ -5,8 +5,9 @@ repo_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_dir"
 profile=""
 use_1password=""
+install_dotfiles=""
 usage() {
-  echo "Usage: $0 [personal|work|--bootstrap-only] [--1password-ssh|--keep-ssh]" >&2
+  echo "Usage: $0 [personal|work|--bootstrap-only] [--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]" >&2
   exit 64
 }
 for argument in "$@"; do
@@ -18,6 +19,10 @@ for argument in "$@"; do
     --1password-ssh|--keep-ssh)
       [[ -z "$use_1password" ]] || usage
       if [[ "$argument" == --1password-ssh ]]; then use_1password=true; else use_1password=false; fi
+      ;;
+    --dotfiles|--skip-dotfiles)
+      [[ -z "$install_dotfiles" ]] || usage
+      if [[ "$argument" == --dotfiles ]]; then install_dotfiles=true; else install_dotfiles=false; fi
       ;;
     *) usage ;;
   esac
@@ -60,9 +65,23 @@ if [[ "$use_1password" == true ]]; then
 else
   echo "SSH: preserve the existing configuration and agent."
 fi
+if [[ -z "$install_dotfiles" ]]; then
+  install_dotfiles=true
+  if [[ "$platform" == ubuntu && "$profile" != --bootstrap-only && -t 0 ]]; then
+    while true; do
+      read -r -p "Install your dotfiles? [Y/n] " answer || break
+      case "$answer" in
+        y|Y|yes|Yes|YES|"") break ;;
+        n|N|no|No|NO) install_dotfiles=false; break ;;
+        *) echo "Please answer yes or no." ;;
+      esac
+    done
+  fi
+fi
 source "$repo_dir/scripts/bootstrap-$platform.sh"
 
 if [[ "$profile" != --bootstrap-only ]]; then
   exec "$repo_dir/scripts/with-sudo-askpass.sh" ansible-playbook local.yaml \
-    -e "machine_type=$profile" -e "manage_ssh_config=$use_1password"
+    -e "machine_type=$profile" -e "manage_ssh_config=$use_1password" \
+    -e "install_dotfiles=$install_dotfiles"
 fi

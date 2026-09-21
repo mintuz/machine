@@ -2,8 +2,9 @@
 
 Set up macOS and Ubuntu development machines with Ansible and Homebrew.
 Both operating systems support personal and work profiles. Ubuntu defaults
-to a headless setup: no desktop apps or dotfiles installation. Both platforms
-ask whether to configure the 1Password SSH agent before bootstrap starts.
+to a headless setup without desktop apps. Dotfiles install by default on both
+platforms, with a startup opt-out prompt on Ubuntu. Both platforms ask whether
+to configure the 1Password SSH agent before bootstrap starts.
 
 ## Quick start
 
@@ -27,6 +28,20 @@ preserves SSH:
 ./install.sh work --1password-ssh
 ./install.sh personal --keep-ssh
 ```
+
+On Ubuntu, full setup also asks `Install your dotfiles? [Y/n]` before
+bootstrap. Press Enter to install or answer No to skip. Without a terminal,
+dotfiles install by default. Use these flags to choose without a prompt:
+
+```bash
+./install.sh work --skip-dotfiles
+./install.sh personal --dotfiles
+```
+
+Both flags work on macOS too. Bootstrap-only runs do not install dotfiles or
+ask about them. The choice applies to one run; `make dotfiles` installs them
+later. The external dotfiles still contain Mac-specific shell paths; see the
+compatibility note below before using the resulting shell on Linux.
 
 On macOS, bootstrap first if you want 1Password SSH and still need to sign in:
 
@@ -74,7 +89,7 @@ available and removes its temporary password helper when the command exits.
 | `make osx` / `make dock` | Configure macOS preferences / Dock; skipped on Ubuntu |
 | `make git PROFILE=work` | Configure Git using the configured name and email |
 | `make node` | Install nvm-managed Node LTS and configure pnpm |
-| `make dotfiles` | Explicitly install the external dotfiles on either OS |
+| `make dotfiles` | Install or refresh the external dotfiles on either OS |
 | `make update` | Update installed Homebrew packages, CLI casks, and runtime tools; App Store only on Mac |
 | `make check` | Check routing, safety regressions, Brewfile parsing, shell syntax, and Ansible syntax |
 
@@ -146,10 +161,12 @@ Shared preferences live in `defaults.yaml`. OS defaults live in
   every managed SSH run has a separate timestamped backup, including when
   selecting the SSH tasks directly. `ssh_agent_socket` can be overridden
   with Ansible extra variables for a custom socket.
-- `install_dotfiles` is true on Mac and false on Ubuntu. `make dotfiles`
-  opts in explicitly. The external dotfiles currently contain a hardcoded
-  `/opt/homebrew` shell path: make them Linux-compatible before opting in
-  on Ubuntu. This repository does not modify that external repository.
+- `install_dotfiles` defaults to true on both platforms. The Ubuntu startup
+  prompt and `--skip-dotfiles` can disable it for a full setup run. Direct
+  Ansible runs can use `-e install_dotfiles=false`; tagged Make commands do
+  not prompt. The external dotfiles currently contain a hardcoded
+  `/opt/homebrew` shell path, so successful installation does not establish
+  Linux shell compatibility. That requires changes in the external repository.
   The clone task refuses to discard local changes in an existing checkout.
 - Ubuntu gets Homebrew shell initialization and Node/pnpm paths without
   requiring the external dotfiles. Zsh is installed through apt on Ubuntu,
@@ -180,7 +197,7 @@ Shared tasks must not call Mac-only commands. Mac tasks live under
 
 `make check` does not install packages or change your shell/SSH configuration.
 It uses temporary directories and fake commands to check all four OS/profile
-combinations, SSH prompt answers and flags, SSH opt-out, invalid inventories,
+combinations, SSH/dotfiles prompt answers and flags, opt-outs, invalid inventories,
 headless sudo, successive SSH backups, Node ownership, and error propagation.
 These checks do not replace a real
 installation on a disposable machine.
@@ -188,7 +205,8 @@ installation on a disposable machine.
 Validation performed on 2026-09-21:
 
 - Ubuntu 24.04 ARM64 in Docker: fresh bootstrap and the complete shared CLI
-  inventory through `./install.sh work`, without a terminal; personal CLI
+  inventory through `./install.sh work`, without a terminal and with dotfiles
+  disabled (before the default changed); personal CLI
   rerun, update flow, and configured shell/tool startup checks.
 - macOS: non-installing checks, inventory parsing, and Ansible syntax checks.
 - Simulated failures: invalid profiles/inventories, missing sudo authorization,
@@ -196,6 +214,8 @@ Validation performed on 2026-09-21:
 - SSH opt-in follow-up: terminal prompt/flag checks, simulated Ansible runs
   on both OSes, and Ubuntu startup with inert bootstrap commands; live
   1Password authentication has not been tested.
+- Dotfiles default/opt-out: routing and terminal prompt checks passed; the
+  external dotfiles have not been runtime-tested on Linux.
 
 Fresh macOS installation, GUI/App Store behavior, Ubuntu x86_64, and other
 Ubuntu releases have not been runtime-tested. Repeat the disposable-machine

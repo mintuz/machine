@@ -5,6 +5,7 @@ import os
 import pty
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import tempfile
 
@@ -28,16 +29,16 @@ with tempfile.TemporaryDirectory() as directory:
                                    "package_files == " + json.dumps(expected),
                                    "(manage_ssh_config | bool) == (test_manage | default(false) | bool)",
                                    "ssh_agent_socket == " + json.dumps("~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock" if platform == "mac" else "~/.1password/agent.sock"),
-                                   "install_dotfiles | bool == " + str(platform == "mac").lower()]}}]}]
+                                   "(install_dotfiles | bool) == (test_dotfiles | default(true) | bool)"]}}]}]
             path = fixture / "check.yaml"
             path.write_text(json.dumps(play))
             result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)],
                                     text=True, capture_output=True)
             assert result.returncode == 0, result.stdout + result.stderr
             result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path),
-                                     "-e", "manage_ssh_config=true test_manage=true"], text=True, capture_output=True)
+                                     "-e", "manage_ssh_config=true test_manage=true install_dotfiles=false test_dotfiles=false"], text=True, capture_output=True)
             assert result.returncode == 0, result.stdout + result.stderr
-            print(f"PASS: {platform}/{profile} selects its layers, defaults, and optional SSH override")
+            print(f"PASS: {platform}/{profile} selects its layers, defaults, and SSH/dotfiles overrides")
     play[0]["vars"]["ansible_facts"]["env"]["SSH_AUTH_SOCK"] = "/tmp/session-specific-agent"
     play[0]["tasks"][-1] = {"ansible.builtin.assert": {"that": "ssh_agent_socket == 'SSH_AUTH_SOCK'"}}
     path.write_text(json.dumps(play))
@@ -78,22 +79,39 @@ print("PASS: bootstrap rejects an invalid profile before installing anything")
 # Exercise the actual startup prompt with a terminal; bootstrap and Ansible are inert.
 with tempfile.TemporaryDirectory() as directory:
     fixture = Path(directory)
-    shutil.copy(root / "install.sh", fixture / "install.sh")
+    installer = fixture / "install.sh"
+    installer.write_text((root / "install.sh").read_text().replace(
+        "source /etc/os-release", "source " + shlex.quote(str(fixture / "os-release"))))
+    installer.chmod(0o755)
+    (fixture / "os-release").write_text("ID=ubuntu\n")
     (fixture / "scripts").mkdir()
     (fixture / "scripts/bootstrap-macos.sh").write_text('echo "bootstrap:$use_1password"\n')
+    (fixture / "scripts/bootstrap-ubuntu.sh").write_text('echo "bootstrap:$use_1password"\n')
     wrapper = fixture / "scripts/with-sudo-askpass.sh"
     wrapper.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
     wrapper.chmod(0o755)
     (fixture / "bin").mkdir()
     uname = fixture / "bin/uname"
-    uname.write_text('#!/bin/sh\necho Darwin\n')
+    uname.write_text('#!/bin/sh\nprintf "%s\\n" "${TEST_SYSTEM:-Darwin}"\n')
     uname.chmod(0o755)
     env = dict(os.environ, PATH=str(fixture / "bin") + os.pathsep + os.environ["PATH"])
-    for args, answer, expected in (([], None, "false"), ([], "y\n", "true"),
-                                   ([], "n\n", "false"), ([], "\n", "false"),
-                                   ([], "maybe\nyes\n", "true"),
-                                   (["--1password-ssh"], None, "true"),
-                                   (["--keep-ssh"], None, "false")):
+    cases = [
+        ("Darwin", [], None, "false", "true"),
+        ("Darwin", [], "y\n", "true", "true"),
+        ("Darwin", [], "n\n", "false", "true"),
+        ("Darwin", [], "\n", "false", "true"),
+        ("Darwin", [], "maybe\nyes\n", "true", "true"),
+        ("Darwin", ["--1password-ssh"], None, "true", "true"),
+        ("Darwin", ["--keep-ssh", "--skip-dotfiles"], None, "false", "false"),
+        ("Linux", [], None, "false", "true"),
+        ("Linux", [], "n\n\n", "false", "true"),
+        ("Linux", [], "y\nn\n", "true", "false"),
+        ("Linux", [], "n\nmaybe\ny\n", "false", "true"),
+        ("Linux", ["--keep-ssh", "--skip-dotfiles"], None, "false", "false"),
+        ("Linux", ["--1password-ssh", "--dotfiles"], None, "true", "true"),
+    ]
+    for system, args, answer, expected, dotfiles in cases:
+        env["TEST_SYSTEM"] = system
         master, slave = pty.openpty()
         try:
             process = subprocess.Popen(["bash", str(fixture / "install.sh"), "work", *args],
@@ -104,12 +122,15 @@ with tempfile.TemporaryDirectory() as directory:
             stdout, stderr = process.communicate(timeout=15)
             assert process.returncode == 0, stdout + stderr
             assert "bootstrap:" + expected in stdout and "manage_ssh_config=" + expected in stdout, stdout
-            assert "machine_type=work" in stdout, stdout
+            assert "machine_type=work" in stdout and "install_dotfiles=" + dotfiles in stdout, stdout
+            if system == "Linux" and answer is not None:
+                assert "[Y/n]" in stderr, stderr
             if answer is not None:
                 assert "[y/N]" in stderr, stderr
         finally:
             os.close(master)
             os.close(slave)
+    env["TEST_SYSTEM"] = "Darwin"
     result = subprocess.run(["bash", str(fixture / "install.sh"), "--bootstrap-only", "--1password-ssh"],
                             env=env, text=True, capture_output=True)
     assert result.returncode == 0 and "bootstrap:true" in result.stdout and "ansible-playbook" not in result.stdout
@@ -120,4 +141,7 @@ with tempfile.TemporaryDirectory() as directory:
     result = subprocess.run(["bash", str(fixture / "install.sh"), "--keep-ssh", "--1password-ssh"],
                             env=env, text=True, capture_output=True)
     assert result.returncode == 64 and "bootstrap:" not in result.stdout
-    print("PASS: startup prompts before bootstrap, supports SSH flags, and preserves SSH without a terminal")
+    result = subprocess.run(["bash", str(fixture / "install.sh"), "--dotfiles", "--skip-dotfiles"],
+                            env=env, text=True, capture_output=True)
+    assert result.returncode == 64 and "bootstrap:" not in result.stdout
+    print("PASS: startup SSH/dotfiles prompts, defaults, opt-outs, and unattended flags on both platforms")
