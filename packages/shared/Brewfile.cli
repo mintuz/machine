@@ -1,4 +1,4 @@
-# Core Homebrew formulae and CLI casks installed for both personal and work profiles.
+# CLI tools shared by macOS, Ubuntu, and both profiles.
 
 # Version control
 brew "git"
@@ -18,7 +18,7 @@ brew "starship"
 brew "thefuck"
 brew "eza"
 brew "bat"
-brew "tldr"
+brew "tlrc"
 
 # Search, data, and network tools
 brew "ripgrep"
@@ -36,19 +36,16 @@ brew "pipx"
 brew "deno"
 brew "go"
 
-# Setup automation and Mac management
-brew "mas"
+# Setup automation
 brew "ansible"
-brew "mole"
 
 # Databases and infrastructure
 brew "mysql-client"
 brew "pscale"
 
-# Build systems and Apple platform tooling
+# Build systems and Swift tooling
 brew "cmake"
 brew "asciinema"
-brew "xcode-build-server"
 brew "xcbeautify"
 brew "swiftformat"
 brew "swift-format"
@@ -60,3 +57,5 @@ brew "glances"
 cask "codex"
 brew "opencode"
 cask "notion-cli"
+cask "1password-cli"
+cask "claude-code@latest", greedy: true

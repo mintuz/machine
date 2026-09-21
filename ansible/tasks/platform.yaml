@@ -1,0 +1,50 @@
+---
+- name: Validate OS and profile
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['system'] == 'Darwin' or (ansible_facts['system'] == 'Linux' and ansible_facts['distribution'] == 'Ubuntu')
+      - machine_type in ['personal', 'work']
+    fail_msg: "Unsupported OS or profile. Use macOS or Ubuntu with machine_type=personal or work."
+
+- name: Select platform
+  ansible.builtin.set_fact:
+    platform: "{{ 'mac' if ansible_facts['system'] == 'Darwin' else 'linux' }}"
+
+- name: Load platform defaults
+  ansible.builtin.include_vars: "{{ playbook_dir }}/ansible/vars/{{ platform }}.yaml"
+
+- name: Find package inventories
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/packages"
+    patterns: 'Brewfile.*'
+    recurse: true
+  register: package_inventory
+
+- name: Validate inventory paths
+  ansible.builtin.assert:
+    that: item.path is match(inventory_pattern)
+    fail_msg: "Invalid package inventory: {{ item.path }}. Check the layer, profile, and Brewfile name."
+    quiet: true
+  vars:
+    inventory_pattern: "^{{ playbook_dir | regex_escape }}/packages/(shared|mac|linux)(/(personal|work))?/Brewfile[.](cli(-optional)?|gui(-optional)?|app-store)$"
+  loop: "{{ package_inventory.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Require the shared CLI inventory
+  ansible.builtin.assert:
+    that: (playbook_dir ~ '/packages/shared/Brewfile.cli') in (package_inventory.files | map(attribute='path') | list)
+    fail_msg: "Missing shared CLI inventory: packages/shared/Brewfile.cli"
+    quiet: true
+
+- name: Select shared, platform, and profile inventories
+  ansible.builtin.set_fact:
+    package_files: >-
+      {{ package_layers | product(['Brewfile.cli', 'Brewfile.cli-optional', 'Brewfile.gui', 'Brewfile.gui-optional', 'Brewfile.app-store'])
+         | map('join', '/') | select('in', package_inventory.files | map(attribute='path') | list) | list }}
+  vars:
+    package_layers:
+      - "{{ playbook_dir }}/packages/shared"
+      - "{{ playbook_dir }}/packages/shared/{{ machine_type }}"
+      - "{{ playbook_dir }}/packages/{{ platform }}"
+      - "{{ playbook_dir }}/packages/{{ platform }}/{{ machine_type }}"

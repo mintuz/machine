@@ -1,19 +1,19 @@
 # By default, use the 1Password SSH agent for all hosts
 Host *
-  IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+  IdentityAgent "{{ ssh_agent_socket }}"
 
 Host github.com
   HostName github.com
   # Downloaded from 1Password App
-  IdentityFile ~/.ssh/{{machine_type}}_github.pub
+  IdentityFile ~/.ssh/{{ personal_public_ssh_key if machine_type == 'personal' else work_public_ssh_key }}
   IdentitiesOnly yes
 
 Host github-alt.com
   HostName github.com
   # Downloaded from 1Password App
 {% if machine_type == "personal" %}
-  IdentityFile ~/.ssh/work_github.pub
+  IdentityFile ~/.ssh/{{ work_public_ssh_key }}
 {% else %}
-  IdentityFile ~/.ssh/personal_github.pub
+  IdentityFile ~/.ssh/{{ personal_public_ssh_key }}
 {% endif %}
   IdentitiesOnly yes

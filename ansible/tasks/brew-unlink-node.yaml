@@ -1,8 +1,25 @@
 ---
 # Keep nvm in control of the active Node version. Some Homebrew formulae can
 # install or relink the unversioned `node` formula as a dependency.
+- name: Check for a working nvm default runtime
+  ansible.builtin.shell: |
+    set -e
+    export NVM_DIR="{{ ansible_facts['env']['HOME'] }}/.nvm"
+    nvm_script="$(brew --prefix)/opt/nvm/nvm.sh"
+    [ -s "$nvm_script" ] || exit 1
+    . "$nvm_script" --no-use
+    nvm which default
+  args:
+    executable: /bin/bash
+  register: nvm_default
+  changed_when: false
+  failed_when: false
+
 - name: Unlink Homebrew node so nvm controls the Node version
   ansible.builtin.command: brew unlink node
+  when:
+    - nvm_default.rc == 0
+    - nvm_default.stdout.startswith(ansible_facts['env']['HOME'] ~ '/.nvm/versions/node/')
   register: brew_unlink_node_result
   changed_when: "'symlinks removed' in brew_unlink_node_result.stdout"
   failed_when: false

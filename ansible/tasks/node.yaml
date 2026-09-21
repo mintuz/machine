@@ -8,9 +8,22 @@
 
 - name: Ensure nvm directory exists
   ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/.nvm"
+    path: "{{ ansible_facts['env']['HOME'] }}/.nvm"
     state: directory
     mode: "0755"
+  tags:
+    - install
+    - node
+
+- name: Install latest lts version of node
+  ansible.builtin.shell: |
+    set -e
+    export NVM_DIR="{{ ansible_facts['env']['HOME'] }}/.nvm"
+    source "$(brew --prefix nvm)/nvm.sh" --no-use
+    nvm install --lts
+    nvm alias default 'lts/*'
+  args:
+    executable: /bin/bash
   tags:
     - install
     - node
@@ -21,21 +34,9 @@
     - install
     - node
 
-- name: Install latest lts version of node
-  ansible.builtin.shell: |
-    export NVM_DIR="{{ ansible_env.HOME }}/.nvm"
-    source "$(brew --prefix nvm)/nvm.sh"
-    nvm install --lts
-    nvm alias default 'lts/*'
-  args:
-    executable: /bin/bash
-  tags:
-    - install
-    - node
-
 - name: Ensure pnpm global bin directory exists
   ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/Library/pnpm/bin"
+    path: "{{ pnpm_home }}/bin"
     state: directory
     mode: "0755"
   tags:
@@ -44,11 +45,12 @@
 
 - name: Install or update pnpm global packages
   ansible.builtin.shell: |
-    export NVM_DIR="{{ ansible_env.HOME }}/.nvm"
-    export PNPM_HOME="{{ ansible_env.HOME }}/Library/pnpm"
+    set -e
+    export NVM_DIR="{{ ansible_facts['env']['HOME'] }}/.nvm"
+    export PNPM_HOME="{{ pnpm_home }}"
     export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
     source "$(brew --prefix nvm)/nvm.sh"
-    pnpm add -g {{ item }}@latest
+    pnpm add -g {{ (item ~ "@latest") | quote }}
   args:
     executable: /bin/bash
   loop: "{{ pnpm_global_packages }}"
@@ -56,3 +58,18 @@
   tags:
     - install
     - node
+
+- name: Configure Node and pnpm in the Ubuntu shell
+  ansible.builtin.blockinfile:
+    path: "{{ ansible_facts['env']['HOME'] }}/{{ item }}"
+    create: true
+    mode: "0644"
+    marker: "# {mark} dev-machine Node and pnpm"
+    block: |
+      export NVM_DIR="$HOME/.nvm"
+      [ ! -s "$(brew --prefix nvm)/nvm.sh" ] || . "$(brew --prefix nvm)/nvm.sh"
+      export PNPM_HOME="{{ pnpm_home }}"
+      export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
+  loop: [.bashrc, .zshrc]
+  when: platform == 'linux'
+  tags: [install, node]

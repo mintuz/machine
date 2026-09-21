@@ -6,3 +6,6 @@ tap "xcodesorg/made"
 
 # Apple platform tooling
 brew "xcodesorg/made/xcodes"
+
+# Xcode project management
+cask "tuist", greedy: true

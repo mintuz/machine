@@ -20,7 +20,6 @@ cask "protonvpn", greedy: true
 cask "little-snitch", greedy: true
 cask "micro-snitch", greedy: true
 cask "1password", greedy: true
-cask "1password-cli", greedy: true
 cask "authy", greedy: true
 
 # Terminals and developer tools
@@ -35,7 +34,6 @@ cask "bruno", greedy: true
 cask "chatgpt", greedy: true
 cask "codex-app", greedy: true
 cask "claude", greedy: true
-cask "claude-code@latest", greedy: true
 cask "fluidvoice", greedy: true
 
 # Browsers

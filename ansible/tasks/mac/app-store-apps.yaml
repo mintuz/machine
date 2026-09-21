@@ -8,9 +8,10 @@
     - install
 
 - name: Read Mac App Store app IDs from Brewfile
-  ansible.builtin.command: ruby -ne 'puts $1 if /^\s*mas\s+"[^"]+",\s+id:\s*([0-9]+)/' "{{ playbook_dir }}/Brewfile.app-store"
+  ansible.builtin.command: ruby -ne 'puts $1 if /^\s*mas\s+"[^"]+",\s+id:\s*([0-9]+)/' "{{ item }}"
   args:
     chdir: "{{ playbook_dir }}"
+  loop: "{{ package_files | select('search', '/Brewfile[.]app-store$') | list }}"
   register: app_store_app_ids
   changed_when: false
   tags:
@@ -33,7 +34,7 @@
     sudo -A "$mas_path" get "{{ item }}" || sudo -A "$mas_path" install "{{ item }}"
   args:
     executable: /bin/bash
-  loop: "{{ app_store_app_ids.stdout_lines }}"
+  loop: "{{ app_store_app_ids.results | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten | unique }}"
   register: app_store_install
   changed_when: >-
     'Installing' in app_store_install.stdout or
@@ -45,3 +46,10 @@
   tags:
     - app-store
     - install
+
+- name: Report App Store installation failures
+  ansible.builtin.debug:
+    msg: "App {{ item.item }}: {{ item.stderr | default(item.stdout, true) }}"
+  loop: "{{ app_store_install.results | default([]) }}"
+  when: item.rc | default(0) != 0
+  tags: [app-store, install]

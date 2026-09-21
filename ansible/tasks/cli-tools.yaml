@@ -1,51 +1,39 @@
-- name: Install CLI packages from Brewfile
-  ansible.builtin.command: brew bundle install --file "{{ playbook_dir }}/Brewfile.cli"
+- name: Replace the disabled tldr formula
+  community.general.homebrew:
+    name: tldr
+    state: absent
+  tags: [install, productivity, cli]
+
+- name: Install CLI packages from selected inventories
+  ansible.builtin.command:
+    argv: [brew, bundle, install, --file, "{{ item }}"]
+  loop: "{{ package_files | select('search', '/Brewfile[.]cli$') | list }}"
   environment: "{{ homebrew_environment }}"
   register: brew_bundle_cli
-  changed_when: >-
-    'Installing' in (brew_bundle_cli.stdout | default('')) or
-    'Upgrading' in (brew_bundle_cli.stdout | default('')) or
-    'Tapping' in (brew_bundle_cli.stdout | default(''))
-  tags:
-    - install
-    - productivity
-    - cli
+  changed_when: "'Installing' in brew_bundle_cli.stdout or 'Upgrading' in brew_bundle_cli.stdout or 'Tapping' in brew_bundle_cli.stdout"
+  tags: [install, productivity, cli]
 
-- name: Install optional CLI packages from Brewfile
-  ansible.builtin.command: brew bundle install --file "{{ playbook_dir }}/Brewfile.cli-optional"
+- name: Install optional CLI packages
+  ansible.builtin.command:
+    argv: [brew, bundle, install, --file, "{{ item }}"]
+  loop: "{{ package_files | select('search', '/Brewfile[.]cli-optional$') | list }}"
   environment: "{{ homebrew_environment }}"
   register: brew_bundle_cli_optional
-  changed_when: >-
-    'Installing' in (brew_bundle_cli_optional.stdout | default('')) or
-    'Upgrading' in (brew_bundle_cli_optional.stdout | default('')) or
-    'Tapping' in (brew_bundle_cli_optional.stdout | default(''))
+  changed_when: "'Installing' in brew_bundle_cli_optional.stdout or 'Upgrading' in brew_bundle_cli_optional.stdout or 'Tapping' in brew_bundle_cli_optional.stdout"
   failed_when: false
-  tags:
-    - install
-    - productivity
-    - cli
+  tags: [install, productivity, cli]
 
 - name: Report optional CLI package failures
   ansible.builtin.debug:
-    msg:
-      - "Optional CLI package install failed but setup will continue."
-      - "{{ brew_bundle_cli_optional.stderr | default('') }}"
-  when: brew_bundle_cli_optional.rc != 0
-  tags:
-    - install
-    - productivity
-    - cli
+    msg: "{{ item.item }}: {{ item.stderr }}"
+  loop: "{{ brew_bundle_cli_optional.results | default([]) }}"
+  when: item.rc != 0
+  tags: [install, productivity, cli]
 
 - name: Unlink Homebrew node after CLI package installs
   ansible.builtin.import_tasks: brew-unlink-node.yaml
-  tags:
-    - install
-    - productivity
-    - cli
+  tags: [install, productivity, cli]
 
-- name: Better fzf shell integration
-  ansible.builtin.shell: $(brew --prefix)/opt/fzf/install
-  tags:
-    - install
-    - productivity
-    - cli
+- name: Configure fzf shell integration
+  ansible.builtin.shell: '"$(brew --prefix)/opt/fzf/install" --all'
+  tags: [install, productivity, cli]

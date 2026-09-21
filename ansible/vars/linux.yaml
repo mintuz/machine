@@ -1,0 +1,5 @@
+# Headless Ubuntu keeps its existing SSH agent and configuration.
+manage_ssh_config: false
+install_dotfiles: false
+pnpm_home: "{{ ansible_facts['env']['HOME'] }}/.local/share/pnpm"
+shell_path: /usr/bin/zsh

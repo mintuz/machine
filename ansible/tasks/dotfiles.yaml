@@ -14,7 +14,7 @@
     recursive: yes
     update: yes
     accept_hostkey: yes
-    force: yes
+    force: no
     version: "{{ dotfiles_version }}"
   tags:
     - install
@@ -24,7 +24,7 @@
 
 - name: Find macOS metadata files in dotfiles checkout
   ansible.builtin.find:
-    paths: "{{ ansible_env.HOME }}/.dotfiles"
+    paths: "{{ ansible_facts['env']['HOME'] }}/.dotfiles"
     patterns: ".DS_Store"
     hidden: true
     recurse: true
@@ -42,7 +42,7 @@
     state: absent
   loop: "{{ dotfiles_macos_metadata.files }}"
   loop_control:
-    label: "{{ item.path | regex_replace('^' ~ ansible_env.HOME ~ '/', '~/') }}"
+    label: "{{ item.path | regex_replace('^' ~ ansible_facts['env']['HOME'] ~ '/', '~/') }}"
   tags:
     - install
     - dotfiles
@@ -51,7 +51,7 @@
 
 - name: Ensure dotfiles backup directory exists
   ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/.mac-setup-backups/{{ ansible_date_time.iso8601_basic_short }}/dotfiles"
+    path: "{{ ansible_facts['env']['HOME'] }}/.dev-setup-backups/{{ ansible_facts['date_time']['iso8601_basic'] }}/dotfiles"
     state: directory
     mode: "0755"
   when: dotfiles_conflict_paths | default([]) | length > 0
@@ -64,8 +64,8 @@
 - name: Back up existing dotfile conflicts before stow
   ansible.builtin.shell: |
     set -euo pipefail
-    target="{{ ansible_env.HOME }}/{{ item }}"
-    backup="{{ ansible_env.HOME }}/.mac-setup-backups/{{ ansible_date_time.iso8601_basic_short }}/dotfiles/{{ item }}"
+    target="{{ ansible_facts['env']['HOME'] }}/{{ item }}"
+    backup="{{ ansible_facts['env']['HOME'] }}/.dev-setup-backups/{{ ansible_facts['date_time']['iso8601_basic'] }}/dotfiles/{{ item }}"
 
     if [ -e "$target" ] && [ ! -L "$target" ]; then
       mkdir -p "$(dirname "$backup")"
