@@ -2,7 +2,8 @@
 
 Set up macOS and Ubuntu development machines with Ansible and Homebrew.
 Both operating systems support personal and work profiles. Ubuntu defaults
-to a headless setup: no desktop apps, SSH changes, or dotfiles installation.
+to a headless setup: no desktop apps or dotfiles installation. Both platforms
+ask whether to configure the 1Password SSH agent before bootstrap starts.
 
 ## Quick start
 
@@ -14,22 +15,43 @@ Run as your normal user with sudo access:
 ./install.sh work
 ```
 
-On macOS, bootstrap first if you still need to sign in to 1Password:
+The SSH prompt defaults to **No**, preserving the existing SSH configuration
+and agent. **Yes** backs up and replaces SSH configuration with the 1Password
+agent and this repository's personal/work GitHub public keys. Check those keys
+before opting in. The choice applies to that run; it is not saved.
+
+For unattended runs, use an explicit flag. Without a terminal or flag, setup
+preserves SSH:
 
 ```bash
-./install.sh --bootstrap-only
+./install.sh work --1password-ssh
+./install.sh personal --keep-ssh
+```
+
+On macOS, bootstrap first if you want 1Password SSH and still need to sign in:
+
+```bash
+./install.sh --bootstrap-only --1password-ssh
 # Open 1Password, sign in, and enable its SSH agent.
-make personal
+./install.sh personal --1password-ssh
 ```
 
 Sign in to the Mac App Store before installing its apps. Public GitHub keys
-for the Mac SSH configuration are stored under `.ssh/` in this repository.
+for managed SSH configuration are stored under `.ssh/` in this repository.
 `new-mac.sh` remains a shortcut for Mac bootstrap only.
 
 On Ubuntu, bootstrap installs apt prerequisites, Homebrew, and Ansible.
-It preserves the existing SSH configuration and agent, including a forwarded
-agent. It does not install the 1Password desktop application. The shared
-1Password CLI is independent of that desktop SSH agent.
+Opting into 1Password SSH uses `SSH_AUTH_SOCK` when it is set, allowing a
+forwarded 1Password agent to follow each session's socket. Otherwise it uses
+`~/.1password/agent.sock`, which requires an already configured local 1Password
+app. Ubuntu setup does not install that desktop app. On a headless server,
+[forward the agent from your client](https://www.1password.dev/ssh/agent/forwarding)
+before opting in. Setup does not sign in to 1Password or enable the agent itself.
+
+The SSH choice controls SSH configuration, not the software inventory:
+1Password remains a Mac GUI package, and its CLI remains a shared package.
+Declining on a later run leaves the existing configuration in place; it does
+not undo an earlier opt-in.
 
 For unattended setup, configure passwordless sudo for the setup user.
 Ansible commands reuse and refresh existing sudo authorization. If a password
@@ -57,7 +79,9 @@ available and removes its temporary password helper when the command exits.
 | `make check` | Check routing, safety regressions, Brewfile parsing, shell syntax, and Ansible syntax |
 
 Tagged commands assume bootstrap has already run. `PROFILE` defaults to
-`personal`; it is not remembered between invocations. `make personal` and
+`personal`; it is not remembered between invocations. `make personal`,
+`make work`, and `make setup` use the startup SSH prompt. Tagged Make commands
+do not prompt and leave SSH configuration alone by default. `make personal` and
 `make work` explicitly select their named profile.
 
 ## Package inventory
@@ -113,11 +137,15 @@ Shared preferences live in `defaults.yaml`. OS defaults live in
 - `machine_type` selects personal/work package layers and, when managed,
   the primary GitHub SSH key. Git name and email still come from `git_name`
   and `git_email`; profiles do not invent different Git identities.
-- `manage_ssh_config` is true on Mac and false on Ubuntu. When enabled,
+- `manage_ssh_config` defaults to false on both platforms. The installer
+  passes the startup choice explicitly. For a direct Ansible SSH-only run, use
+  `scripts/with-sudo-askpass.sh ansible-playbook local.yaml --tags ssh
+  -e machine_type=work -e manage_ssh_config=true`. When enabled,
   setup backs up and replaces SSH configuration using `ssh_agent_socket`
   and the configured public key filenames. Inputs are checked before writes;
   every managed SSH run has a separate timestamped backup, including when
-  selecting the SSH tasks directly.
+  selecting the SSH tasks directly. `ssh_agent_socket` can be overridden
+  with Ansible extra variables for a custom socket.
 - `install_dotfiles` is true on Mac and false on Ubuntu. `make dotfiles`
   opts in explicitly. The external dotfiles currently contain a hardcoded
   `/opt/homebrew` shell path: make them Linux-compatible before opting in
@@ -152,8 +180,9 @@ Shared tasks must not call Mac-only commands. Mac tasks live under
 
 `make check` does not install packages or change your shell/SSH configuration.
 It uses temporary directories and fake commands to check all four OS/profile
-combinations, invalid inventories, headless sudo, successive SSH backups,
-Node ownership, and error propagation. These checks do not replace a real
+combinations, SSH prompt answers and flags, SSH opt-out, invalid inventories,
+headless sudo, successive SSH backups, Node ownership, and error propagation.
+These checks do not replace a real
 installation on a disposable machine.
 
 Validation performed on 2026-09-21:
@@ -164,6 +193,9 @@ Validation performed on 2026-09-21:
 - macOS: non-installing checks, inventory parsing, and Ansible syntax checks.
 - Simulated failures: invalid profiles/inventories, missing sudo authorization,
   failed Node installation, runtime update errors, and unsafe Node unlinking.
+- SSH opt-in follow-up: terminal prompt/flag checks, simulated Ansible runs
+  on both OSes, and Ubuntu startup with inert bootstrap commands; live
+  1Password authentication has not been tested.
 
 Fresh macOS installation, GUI/App Store behavior, Ubuntu x86_64, and other
 Ubuntu releases have not been runtime-tested. Repeat the disposable-machine

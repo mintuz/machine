@@ -63,6 +63,17 @@ fi''')
     target = fixture / "home"
     (target / ".ssh").mkdir(parents=True)
     (target / ".ssh/config").write_text("# original SSH config\n")
+    for system, distribution in (("Darwin", "MacOSX"), ("Linux", "Ubuntu")):
+        facts = {"env": {"HOME": str(target), "SSH_AUTH_SOCK": "/tmp/forwarded-agent"},
+                 "system": system, "distribution": distribution,
+                 "date_time": {"iso8601_basic": "declined"}}
+        result = subprocess.run(["ansible-playbook", str(root / "local.yaml"), "--tags", "ssh",
+                                 "-e", json.dumps({"ansible_facts": facts, "manage_ssh_config": False})],
+                                text=True, capture_output=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (target / ".ssh/config").read_text() == "# original SSH config\n"
+        assert not (target / ".dev-setup-backups").exists()
+    print("PASS: declining managed SSH leaves configuration untouched on both platforms")
     (fixture / ".ssh").mkdir()
     for profile in ("personal", "work"):
         (fixture / f".ssh/{profile}.pub").write_text("ssh-ed25519 AAAA test\n")
@@ -70,7 +81,7 @@ fi''')
         play = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
                  "vars": {"ansible_facts": {"env": {"HOME": str(target)},
                                             "date_time": {"iso8601_basic": run}},
-                          "machine_type": profile, "ssh_agent_socket": "/tmp/test-agent.sock",
+                          "machine_type": profile, "ssh_agent_socket": "SSH_AUTH_SOCK" if run == "second" else "/tmp/test-agent.sock",
                           "personal_public_ssh_key": "personal.pub", "work_public_ssh_key": "work.pub"},
                  "tasks": [{"ansible.builtin.import_tasks": str(root / "ansible/tasks/security.yaml")}]}]
         path.write_text(json.dumps(play))
@@ -81,6 +92,7 @@ fi''')
     assert (backups / "first/ssh/config").read_text() == "# original SSH config\n"
     assert "IdentityFile ~/.ssh/personal.pub" in (backups / "second/ssh/config").read_text()
     assert (target / ".ssh/config").stat().st_mode & 0o777 == 0o600
+    assert 'IdentityAgent "SSH_AUTH_SOCK"' in (target / ".ssh/config").read_text()
     print("PASS: managed SSH preserves successive backups even with mixed preview/setup tags")
 
     command("brew", '''if [ "$1" = unlink ]; then

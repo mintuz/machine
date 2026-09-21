@@ -29,7 +29,8 @@ See `README.md` for user-facing setup instructions and validation history.
 
 ## Entry points
 
-- `install.sh [personal|work|--bootstrap-only]` detects the OS and sources
+- `install.sh [personal|work|--bootstrap-only] [--1password-ssh|--keep-ssh]`
+  detects the OS, asks about 1Password SSH before bootstrap, and sources
   `scripts/bootstrap-macos.sh` or `scripts/bootstrap-ubuntu.sh`; both use
   `scripts/bootstrap-homebrew.sh` for Homebrew and Ansible prerequisites.
 - `new-mac.sh` is the legacy Mac bootstrap-only wrapper.
@@ -39,6 +40,13 @@ See `README.md` for user-facing setup instructions and validation history.
 - `make packages PROFILE=work` previews selected inventories without writes.
 - `make check` runs shell syntax, package-selection checks, Brewfile parsing,
   safety regressions, and Ansible syntax checks without installing packages.
+
+The SSH prompt defaults to No. Without a terminal, preserve SSH unless
+`--1password-ssh` is explicit. Pass the selection as `manage_ssh_config` to
+Ansible; both OS defaults are false. The choice is per run, not persisted.
+Declining must leave existing SSH files and agents untouched, including a
+configuration installed by an earlier opt-in. Tagged Make commands do not
+prompt; direct SSH setup requires `-e manage_ssh_config=true`.
 
 Bootstrap runs as the normal user, then invokes `local.yaml` through the sudo
 wrapper. Setup selects the platform and inventories, validates prerequisites,
@@ -78,14 +86,22 @@ Put Mac-only tasks under `ansible/tasks/mac/` and guard their imports in
 `local.yaml`. Use Homebrew for shared development tools and apt for Ubuntu
 bootstrap prerequisites. Do not add Mac-only commands to shared tasks.
 
-Ubuntu preserves existing SSH configuration and agents by default and skips
-the external dotfiles. `make dotfiles` explicitly opts in; the external
+Both platforms preserve existing SSH configuration and agents by default.
+Ubuntu skips the external dotfiles. `make dotfiles` explicitly opts in; the external
 repository must support Linux before enabling it. It currently contains
 hardcoded Mac shell paths. Never modify that external repository as an
 incidental part of machine setup work.
 
-Mac setup expects 1Password's SSH agent to be configured and the App Store
-to be signed in. SSH public key filenames, Git name/email, dotfiles source,
+When opting in, the 1Password agent must be enabled separately. Mac bootstrap
+installs the desktop app early only when requested for SSH. The software
+inventories still include the Mac password manager and shared CLI regardless
+of SSH choice. On Ubuntu, an existing `SSH_AUTH_SOCK` selects the literal
+`IdentityAgent "SSH_AUTH_SOCK"`, not its temporary socket path; otherwise use
+`~/.1password/agent.sock`. Headless users forward their client agent. Do not
+install the Linux desktop app as part of headless bootstrap. Mac App Store
+installation requires the App Store to be signed in.
+
+SSH public key filenames, Git name/email, dotfiles source,
 and pnpm global packages are configured in `defaults.yaml`. Profile selection
 changes the primary SSH key but does not invent a different Git identity.
 Keep SSH backups before managed SSH writes and use per-task privilege
@@ -115,7 +131,8 @@ user preferences and update this guide and `README.md` when commands change.
 
 After code or inventory changes, run `make check` with Homebrew, Ansible,
 Python 3, and the collections from `make deps` available. It covers all four
-OS/profile combinations using simulated facts and safety checks using temporary
+OS/profile combinations and SSH opt-in/opt-out, plus terminal prompt and flag
+checks with inert bootstrap scripts. Safety checks use temporary
 directories and fake commands. Use `make packages PROFILE=personal` and
 `make packages PROFILE=work` to inspect actual inventory selection on the host.
 ShellCheck can also check the Bash entry points and sourced bootstrap scripts.

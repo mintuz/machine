@@ -9,8 +9,9 @@ if ! xcode-select -p >/dev/null 2>&1; then
 fi
 bootstrap_shell_files=(.zshrc)
 source "$repo_dir/scripts/bootstrap-homebrew.sh"
-if ! brew list --cask 1password >/dev/null 2>&1 && [[ ! -d /Applications/1Password.app ]]; then
-  brew install --cask 1password
+if [[ "${use_1password:-false}" == true ]]; then
+  if ! brew list --cask 1password >/dev/null 2>&1 && [[ ! -d /Applications/1Password.app ]]; then
+    brew install --cask 1password
+  fi
+  echo "Open 1Password, sign in, and enable its SSH agent before using Git over SSH."
 fi
-brew install --cask 1password-cli
-echo "Configure the 1Password SSH agent before using Git over SSH."
