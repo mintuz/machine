@@ -4,7 +4,16 @@
   vars:
     homebrew_environment: "{{ {'SUDO_ASKPASS': lookup('env', 'SUDO_ASKPASS')} if lookup('env', 'SUDO_ASKPASS') else {} }}"
   pre_tasks:
+    - import_tasks: ansible/tasks/platform.yaml
+      tags: [always]
+
+    - name: Show selected package inventories
+      ansible.builtin.debug:
+        var: package_files
+      tags: [never, packages]
+
     - import_tasks: ansible/tasks/validation.yaml
+      when: "ansible_run_tags != ['packages']"
       tags:
         - always
 
@@ -19,12 +28,18 @@
         - gui
   tasks:
     - import_tasks: ansible/tasks/security.yaml
+      when: manage_ssh_config | bool
     - import_tasks: ansible/tasks/git-setup.yaml
     - import_tasks: ansible/tasks/cli-tools.yaml
-    - import_tasks: ansible/tasks/gui-tools.yaml
+    - import_tasks: ansible/tasks/mac/gui-tools.yaml
+      when: platform == 'mac'
     - import_tasks: ansible/tasks/zsh.yaml
-    - import_tasks: ansible/tasks/app-store-apps.yaml
-    - import_tasks: ansible/tasks/osx.yaml
+    - import_tasks: ansible/tasks/mac/app-store-apps.yaml
+      when: platform == 'mac'
+    - import_tasks: ansible/tasks/mac/osx.yaml
+      when: platform == 'mac'
     - import_tasks: ansible/tasks/node.yaml
     - import_tasks: ansible/tasks/dotfiles.yaml
-    - import_tasks: ansible/tasks/dock.yaml
+      when: install_dotfiles | bool
+    - import_tasks: ansible/tasks/mac/dock.yaml
+      when: platform == 'mac'

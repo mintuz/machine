@@ -1,126 +1,228 @@
-# Mac Dev Machine Setup
+# Development Machine Setup
 
-Automated setup and maintenance for my macOS development machines using Ansible, Homebrew Bundle, and a small set of make targets.
+Set up macOS and Ubuntu development machines with Ansible and Homebrew.
+Both operating systems support personal and work profiles. Ubuntu defaults
+to a headless setup without desktop apps. Dotfiles install by default on both
+platforms, with a startup opt-out prompt on Ubuntu. Both platforms ask whether
+to configure the 1Password SSH agent before bootstrap starts.
 
-## Assumptions
+## Quick start
 
-1. `new-mac.sh` installs 1Password and 1Password CLI; 1Password still needs to be configured as the SSH agent before the full setup runs.
-2. Personal and work GitHub SSH public keys are exported from 1Password and stored in this repo under `.ssh/`.
-3. The Mac App Store is signed in before App Store apps are installed.
-
-## Quick Start
-
-For a fresh Mac, run the bootstrap script first:
+Run as your normal user with sudo access:
 
 ```bash
-./new-mac.sh
+./install.sh personal
+# or
+./install.sh work
 ```
 
-After the bootstrap finishes, open 1Password, sign in, and enable the 1Password SSH agent.
+The SSH prompt defaults to **No**, preserving the existing SSH configuration
+and agent. **Yes** backs up and replaces SSH configuration with the 1Password
+agent and this repository's personal/work GitHub public keys. Check those keys
+before opting in. The choice applies to that run; it is not saved.
 
-Then run one of the setup targets:
+For unattended runs, use an explicit flag. Without a terminal or flag, setup
+preserves SSH:
 
 ```bash
-make        # personal machine
-make work   # work machine
+./install.sh work --1password-ssh
+./install.sh personal --keep-ssh
 ```
 
-The legacy `./install.sh` wrapper runs the same fresh-machine path: `./new-mac.sh` followed by `make`.
+On Ubuntu, full setup also asks `Install your dotfiles? [Y/n]` before
+bootstrap. Press Enter to install or answer No to skip. Without a terminal,
+dotfiles install by default. Use these flags to choose without a prompt:
+
+```bash
+./install.sh work --skip-dotfiles
+./install.sh personal --dotfiles
+```
+
+Both flags work on macOS too. Bootstrap-only runs do not install dotfiles or
+ask about them. The choice applies to one run; `make dotfiles` installs them
+later. The external dotfiles still contain Mac-specific shell paths; see the
+compatibility note below before using the resulting shell on Linux.
+
+On macOS, bootstrap first if you want 1Password SSH and still need to sign in:
+
+```bash
+./install.sh --bootstrap-only --1password-ssh
+# Open 1Password, sign in, and enable its SSH agent.
+./install.sh personal --1password-ssh
+```
+
+Sign in to the Mac App Store before installing its apps. Public GitHub keys
+for managed SSH configuration are stored under `.ssh/` in this repository.
+`new-mac.sh` remains a shortcut for Mac bootstrap only.
+
+On Ubuntu, bootstrap installs apt prerequisites, Homebrew, and Ansible.
+Opting into 1Password SSH uses `SSH_AUTH_SOCK` when it is set, allowing a
+forwarded 1Password agent to follow each session's socket. Otherwise it uses
+`~/.1password/agent.sock`, which requires an already configured local 1Password
+app. Ubuntu setup does not install that desktop app. On a headless server,
+[forward the agent from your client](https://www.1password.dev/ssh/agent/forwarding)
+before opting in. Setup does not sign in to 1Password or enable the agent itself.
+
+The SSH choice controls SSH configuration, not the software inventory:
+1Password remains a Mac GUI package, and its CLI remains a shared package.
+Declining on a later run leaves the existing configuration in place; it does
+not undo an earlier opt-in.
+
+For unattended setup, configure passwordless sudo for the setup user.
+Ansible commands reuse and refresh existing sudo authorization. If a password
+is needed, run from a terminal; the wrapper fails clearly when no terminal is
+available and removes its temporary password helper when the command exits.
 
 ## Commands
 
-| Command          | Description                                                                 |
-| ---------------- | --------------------------------------------------------------------------- |
-| `make`           | Bootstrap dependencies and run the personal setup                           |
-| `make work`      | Bootstrap dependencies and run the work setup                               |
-| `make setup`     | Run prerequisite setup checks                                               |
-| `make deps`      | Install Ansible Galaxy requirements                                         |
-| `make check`     | Validate Brewfiles and Ansible syntax                                       |
-| `make update`    | Update Homebrew, casks, App Store apps, npm/pnpm globals, and Ollama models |
-| `make cli`       | Install command-line packages                                               |
-| `make gui`       | Install GUI packages                                                        |
-| `make app-store` | Install Mac App Store apps                                                  |
-| `make osx`       | Apply macOS defaults                                                        |
-| `make dock`      | Configure the Dock                                                          |
-| `make dotfiles`  | Clone and install dotfiles                                                  |
-| `make git`       | Configure Git identity and defaults                                         |
-| `make node`      | Install nvm-managed Node LTS                                                |
+| Command | Action |
+| --- | --- |
+| `make` / `make personal` | Bootstrap and run personal setup |
+| `make work` | Bootstrap and run work setup |
+| `make setup` | Bootstrap only |
+| `make deps` | Install Ansible collections |
+| `make packages PROFILE=work` | Preview selected inventories without changing the machine |
+| `make cli PROFILE=work` | Install shared, OS, and work CLI tools |
+| `make install PROFILE=work` | Run tasks tagged install |
+| `make gui` | Install Mac applications; skipped on Ubuntu |
+| `make app-store` | Install Mac App Store apps; skipped on Ubuntu |
+| `make osx` / `make dock` | Configure macOS preferences / Dock; skipped on Ubuntu |
+| `make git PROFILE=work` | Configure Git using the configured name and email |
+| `make node` | Install nvm-managed Node LTS and configure pnpm |
+| `make dotfiles` | Install or refresh the external dotfiles on either OS |
+| `make update` | Update installed Homebrew packages, CLI casks, and runtime tools; App Store only on Mac |
+| `make check` | Check routing, safety regressions, Brewfile parsing, shell syntax, and Ansible syntax |
 
-## Package Inventory
+Tagged commands assume bootstrap has already run. `PROFILE` defaults to
+`personal`; it is not remembered between invocations. `make personal`,
+`make work`, and `make setup` use the startup SSH prompt. Tagged Make commands
+do not prompt and leave SSH configuration alone by default. `make personal` and
+`make work` explicitly select their named profile.
 
-Package lists live in Brewfiles:
+## Package inventory
 
-```ruby
-# Brewfile.cli
-brew "ripgrep"
+Each setup combines four layers, in this order:
 
-# Brewfile.gui
-cask "firefox", greedy: true
+1. `packages/shared/`
+2. `packages/shared/<personal|work>/`
+3. `packages/<mac|linux>/`
+4. `packages/<mac|linux>/<personal|work>/`
 
-# Brewfile.app-store
-mas "Things", id: 904280696
+The current files are:
 
-# Brewfile.personal
-cask "personal-only-app", greedy: true
-
-# Brewfile.work
-cask "work-only-app", greedy: true
+```text
+packages/
+├── shared/
+│   └── Brewfile.cli
+└── mac/
+    ├── Brewfile.cli
+    ├── Brewfile.cli-optional
+    ├── Brewfile.gui
+    ├── Brewfile.app-store
+    ├── personal/
+    │   └── Brewfile.gui
+    └── work/
+        └── Brewfile.gui
 ```
 
-Shared package inventory is split into `Brewfile.cli`, `Brewfile.gui`, and `Brewfile.app-store`. `Brewfile.personal` and `Brewfile.work` are available for profile-specific additions.
+Create `packages/linux/Brewfile.cli` only when there is a Linux-only tool.
+For a work CLI on both systems, add it to
+`packages/shared/work/Brewfile.cli`. For a personal Ubuntu addition, use
+`packages/linux/personal/Brewfile.cli`. Missing optional layers need no files.
 
-External-tap packages live in `Brewfile.cli-optional` and `Brewfile.gui-optional`. Those packages are useful, but they are allowed to fail without stopping the rest of the machine setup because third-party taps can move, disappear, or require manual trust.
+Each layer may contain `Brewfile.cli`, `Brewfile.cli-optional`,
+`Brewfile.gui`, `Brewfile.gui-optional`, and `Brewfile.app-store`.
+GUI and App Store inventories are executed only on macOS. Keep desktop
+applications under `mac/`; Ubuntu desktop application setup is not implemented.
+Use the CLI inventories for CLI casks such as Codex and Notion CLI.
+
+CLI inventory failures stop setup; optional CLI and GUI installation failures
+are reported and setup continues. App Store installation is also best effort;
+failed app IDs are printed. Missing required inventories and misspelled
+inventory paths stop setup. Profile layers are additive: switching
+profiles does not uninstall the previous profile's packages. `tlrc` replaces
+the disabled `tldr` formula and still provides the `tldr` command.
 
 ## Configuration
 
-Shared variables live in `defaults.yaml`, including:
+Shared preferences live in `defaults.yaml`. OS defaults live in
+`ansible/vars/mac.yaml` and `ansible/vars/linux.yaml`. Ansible extra variables
+(`-e`) override them.
 
-- `machine_type`
-- Git name and email
-- dotfiles repo and branch
-- public SSH key filenames
-- global pnpm packages
+- `machine_type` selects personal/work package layers and, when managed,
+  the primary GitHub SSH key. Git name and email still come from `git_name`
+  and `git_email`; profiles do not invent different Git identities.
+- `manage_ssh_config` defaults to false on both platforms. The installer
+  passes the startup choice explicitly. For a direct Ansible SSH-only run, use
+  `scripts/with-sudo-askpass.sh ansible-playbook local.yaml --tags ssh
+  -e machine_type=work -e manage_ssh_config=true`. When enabled,
+  setup backs up and replaces SSH configuration using `ssh_agent_socket`
+  and the configured public key filenames. Inputs are checked before writes;
+  every managed SSH run has a separate timestamped backup, including when
+  selecting the SSH tasks directly. `ssh_agent_socket` can be overridden
+  with Ansible extra variables for a custom socket.
+- `install_dotfiles` defaults to true on both platforms. The Ubuntu startup
+  prompt and `--skip-dotfiles` can disable it for a full setup run. Direct
+  Ansible runs can use `-e install_dotfiles=false`; tagged Make commands do
+  not prompt. The external dotfiles currently contain a hardcoded
+  `/opt/homebrew` shell path, so successful installation does not establish
+  Linux shell compatibility. That requires changes in the external repository.
+  The clone task refuses to discard local changes in an existing checkout.
+- Ubuntu gets Homebrew shell initialization and Node/pnpm paths without
+  requiring the external dotfiles. Zsh is installed through apt on Ubuntu,
+  with Oh My Zsh and autosuggestions enabled. Homebrew Node stays linked
+  until nvm has a working default runtime; `make node` installs Node LTS
+  before switching ownership to nvm.
+- Backups are written under `~/.dev-setup-backups`; existing backups under
+  `~/.mac-setup-backups` are left in place.
 
-The 1Password SSH config is rendered from `ansible/templates/ssh_config.j2`. `machine_type=personal` uses `personal_github.pub` for `github.com` and exposes the work key through `github-alt.com`; `machine_type=work` flips those identities.
+`make update` updates installed tools, including those installed outside the
+selected profile; it does not uninstall packages or run Ubuntu system upgrades.
+Its summary distinguishes completed, skipped, and failed components. Runtime
+and cask failures are collected, reported, and cause a nonzero exit status.
+Commands that ran may still report `changed` on a repeat run; a successful
+rerun does not imply a zero-change Ansible recap.
 
-## Validation
+## Implementation and validation
 
-Run:
+`install.sh` detects macOS or Ubuntu and sources the corresponding bootstrap
+script. Shared Homebrew setup lives in `scripts/bootstrap-homebrew.sh`.
+Bootstrap owns prerequisites; `local.yaml` owns configuration and packages.
+`update.yaml` owns maintenance. Unsupported operating systems and profiles
+are rejected before setup tasks run.
 
-```bash
-make check
-```
+`ansible/tasks/platform.yaml` selects package layers for both playbooks.
+Shared tasks must not call Mac-only commands. Mac tasks live under
+`ansible/tasks/mac/` and their imports are guarded in `local.yaml`.
 
-This validates Brewfile parsing and runs Ansible syntax checks for:
+`make check` does not install packages or change your shell/SSH configuration.
+It uses temporary directories and fake commands to check all four OS/profile
+combinations, SSH/dotfiles prompt answers and flags, opt-outs, invalid inventories,
+headless sudo, successive SSH backups, Node ownership, and error propagation.
+These checks do not replace a real
+installation on a disposable machine.
 
-- `setup.yaml`
-- `local.yaml`
-- `update.yaml`
+Validation performed on 2026-09-21:
 
-The repo uses a local ignored Ansible temp directory via `ansible.cfg`, so syntax checks do not need to write under `~/.ansible/tmp`.
+- Ubuntu 24.04 ARM64 in Docker: fresh bootstrap and the complete shared CLI
+  inventory through `./install.sh work`, without a terminal and with dotfiles
+  disabled (before the default changed); personal CLI
+  rerun, update flow, and configured shell/tool startup checks.
+- macOS: non-installing checks, inventory parsing, and Ansible syntax checks.
+- Simulated failures: invalid profiles/inventories, missing sudo authorization,
+  failed Node installation, runtime update errors, and unsafe Node unlinking.
+- SSH opt-in follow-up: terminal prompt/flag checks, simulated Ansible runs
+  on both OSes, and Ubuntu startup with inert bootstrap commands; live
+  1Password authentication has not been tested.
+- Dotfiles default/opt-out: routing and terminal prompt checks passed; the
+  external dotfiles have not been runtime-tested on Linux.
 
-## File Structure
+Fresh macOS installation, GUI/App Store behavior, Ubuntu x86_64, and other
+Ubuntu releases have not been runtime-tested. Repeat the disposable-machine
+checks after changing package inventories or supported platforms.
 
-```text
-.
-├── makefile
-├── new-mac.sh
-├── install.sh
-├── defaults.yaml
-├── local.yaml
-├── setup.yaml
-├── update.yaml
-├── Brewfile.*
-├── requirements.yaml
-├── ansible/
-│   ├── tasks/
-│   └── templates/
-└── scripts/
-    └── with-sudo-askpass.sh
-```
+Repository maintenance instructions live in [AGENTS.md](AGENTS.md).
 
-## Links
-
-1. [Dotfiles](https://github.com/mintuz/.dotfiles)
-2. [1Password SSH Docs](https://developer.1password.com/docs/ssh)
-3. [1Password CLI Docs](https://developer.1password.com/docs/cli/verify)
+[Dotfiles](https://github.com/mintuz/.dotfiles) ·
+[Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux) ·
+[1Password SSH agent](https://developer.1password.com/docs/ssh)

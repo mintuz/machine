@@ -18,6 +18,7 @@
     - name: Upgrade all Homebrew casks
       community.general.homebrew_cask:
         upgrade_all: yes
+        path: /usr/local/bin:/opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin
       environment: "{{ homebrew_environment }}"
       register: cask_upgrade
       ignore_errors: true
@@ -31,25 +32,42 @@
 
     - name: Update npm packages globally
       ansible.builtin.shell: |
-        if command -v npm >/dev/null 2>&1; then
-          npm update -g
+        set -eo pipefail
+        export NVM_DIR="{{ ansible_facts['env']['HOME'] }}/.nvm"
+        if [ -s "$(brew --prefix)/opt/nvm/nvm.sh" ]; then
+          source "$(brew --prefix)/opt/nvm/nvm.sh"
         fi
+        command -v npm >/dev/null 2>&1 || exit 3
+        npm update -g
+      args:
+        executable: /bin/bash
       register: npm_update
       changed_when: npm_update.rc == 0
+      failed_when: npm_update.rc not in [0, 3]
       ignore_errors: true
+      tags: [runtime-update]
 
     - name: Update pnpm packages globally
       ansible.builtin.shell: |
-        export PNPM_HOME="{{ ansible_env.HOME }}/Library/pnpm"
-        export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
-        if command -v pnpm >/dev/null 2>&1; then
-          pnpm update -g
+        set -eo pipefail
+        export NVM_DIR="{{ ansible_facts['env']['HOME'] }}/.nvm"
+        if [ -s "$(brew --prefix)/opt/nvm/nvm.sh" ]; then
+          source "$(brew --prefix)/opt/nvm/nvm.sh"
         fi
+        export PNPM_HOME="{{ pnpm_home }}"
+        export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
+        command -v pnpm >/dev/null 2>&1 || exit 3
+        pnpm update -g
+      args:
+        executable: /bin/bash
       register: pnpm_update
       changed_when: pnpm_update.rc == 0
+      failed_when: pnpm_update.rc not in [0, 3]
       ignore_errors: true
+      tags: [runtime-update]
 
     - name: Update Mac App Store apps
+      when: platform == 'mac'
       ansible.builtin.command: mas upgrade
       register: mas_update
       changed_when: "'No updates available' not in mas_update.stdout"
@@ -57,22 +75,54 @@
 
     - name: Update Ollama models
       ansible.builtin.shell: |
-        if command -v ollama >/dev/null 2>&1; then
-          for model in $(ollama list | tail -n +2 | awk '{print $1}'); do
-            ollama pull "$model"
-          done
-        fi
+        set -eo pipefail
+        command -v ollama >/dev/null 2>&1 || exit 3
+        models="$(ollama list | awk 'NR > 1 {print $1}')"
+        [ -n "$models" ] || exit 3
+        for model in $models; do
+          ollama pull "$model"
+        done
+      args:
+        executable: /bin/bash
       register: ollama_update
       changed_when: ollama_update.rc == 0
+      failed_when: ollama_update.rc not in [0, 3]
       ignore_errors: true
+      tags: [runtime-update]
 
     - name: Display update summary
       ansible.builtin.debug:
-        msg:
-          - "Homebrew metadata: {{ 'updated' if brew_update.changed else 'unchanged' }}"
-          - "Homebrew packages: {{ 'upgraded' if brew_upgrade.changed else 'unchanged' }}"
-          - "Homebrew casks: {{ 'upgraded' if cask_upgrade.changed else 'unchanged or skipped' }}"
-          - "npm globals: {{ 'updated' if npm_update.changed else 'skipped or unchanged' }}"
-          - "pnpm globals: {{ 'updated' if pnpm_update.changed else 'skipped or unchanged' }}"
-          - "Mac App Store: {{ 'updated' if mas_update.changed else 'unchanged or skipped' }}"
-          - "Ollama models: {{ 'updated' if ollama_update.changed else 'skipped or unchanged' }}"
+        msg: >-
+          {{ item.name }}: {{ 'failed' if item.result.failed | default(false)
+          else 'skipped' if item.result.skipped | default(false) or item.result.rc | default(0) == 3
+          else 'completed' }}
+      loop: "{{ update_results }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [runtime-update]
+
+    - name: Fail when any update failed
+      ansible.builtin.assert:
+        that: not (item.result.failed | default(false))
+        fail_msg: "Update failures: {{ item.name }}. See the error above."
+        quiet: true
+      loop: "{{ update_results }}"
+      loop_control:
+        label: "{{ item.name }}"
+      tags: [runtime-update]
+  vars:
+    update_results:
+      - name: Homebrew metadata
+        result: "{{ brew_update | default({'skipped': true}) }}"
+      - name: Homebrew formulae
+        result: "{{ brew_upgrade | default({'skipped': true}) }}"
+      - name: Homebrew casks
+        result: "{{ cask_upgrade | default({'skipped': true}) }}"
+      - name: npm globals
+        result: "{{ npm_update | default({'skipped': true}) }}"
+      - name: pnpm globals
+        result: "{{ pnpm_update | default({'skipped': true}) }}"
+      - name: Mac App Store
+        result: "{{ mas_update | default({'skipped': true}) }}"
+      - name: Ollama models
+        result: "{{ ollama_update | default({'skipped': true}) }}"

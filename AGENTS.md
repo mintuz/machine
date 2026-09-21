@@ -1,121 +1,151 @@
-# CLAUDE.md
+# Repository guidance
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This repository configures macOS and headless Ubuntu development machines
+using Ansible and Homebrew. Both support personal and work profiles.
 
-## Overview
+This is the shared maintenance guide for Codex and Claude Code. `CLAUDE.md`
+imports this file; keep project instructions here to avoid divergent copies.
+See `README.md` for user-facing setup instructions and validation history.
 
-This is an Ansible-based Mac development machine setup automation tool that configures a fresh Mac installation with tools, applications, security settings, and system preferences. The repository follows a personal/work dual-setup pattern using 1Password as the SSH agent.
+## Repository map
 
-## Key Architecture
+| Path | Responsibility |
+| --- | --- |
+| `install.sh`, `scripts/bootstrap-*.sh` | OS detection and bootstrap prerequisites |
+| `makefile` | Profile selection and shortcuts for setup, updates, and checks |
+| `scripts/with-sudo-askpass.sh` | Sudo authorization, password helper, and cleanup |
+| `local.yaml` | Setup task ordering and platform/feature guards |
+| `update.yaml`, `ansible/tasks/update.yaml` | Maintenance of installed tools |
+| `defaults.yaml` | Shared user preferences and default profile |
+| `ansible/vars/{mac,linux}.yaml` | OS paths and SSH/dotfiles defaults |
+| `ansible/tasks/platform.yaml` | OS/profile validation and inventory selection |
+| `packages/` | Homebrew package inventories; no installation logic |
+| `ansible/tasks/` | Shared SSH, Git, CLI, shell, Node, and dotfiles tasks |
+| `ansible/tasks/mac/` | Mac GUI, App Store, system preferences, and Dock tasks |
+| `ansible/templates/` | SSH configuration and global Git ignore templates |
+| `.ssh/` | Public SSH keys used by managed SSH setup; never private keys |
+| `ansible.cfg`, `inventory`, `requirements.yaml` | Local Ansible execution and collection dependencies |
+| `scripts/check-platforms.py`, `scripts/check-safety.py` | Routing and safety regression checks |
 
-### Execution Flow
+## Entry points
 
-1. `install.sh` - Bootstrap script that:
-   - Installs/updates Homebrew
-   - Installs/updates Ansible
-   - Installs required Ansible dependencies (elliotweiser.osx-command-line-tools role, community.general collection)
-   - Runs the main playbook with sudo privileges (`ansible-playbook local.yaml -K`)
+- `install.sh [personal|work|--bootstrap-only] [--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]`
+  detects the OS, asks about 1Password SSH before bootstrap, and sources
+  `scripts/bootstrap-macos.sh` or `scripts/bootstrap-ubuntu.sh`; both use
+  `scripts/bootstrap-homebrew.sh` for Homebrew and Ansible prerequisites.
+- `new-mac.sh` is the legacy Mac bootstrap-only wrapper.
+- `local.yaml` runs setup; `update.yaml` runs maintenance.
+- `make personal` and `make work` bootstrap and configure their profiles.
+- Tagged targets such as `make cli PROFILE=work` assume bootstrap is complete.
+- `make packages PROFILE=work` previews selected inventories without writes.
+- `make check` runs shell syntax, package-selection checks, Brewfile parsing,
+  safety regressions, and Ansible syntax checks without installing packages.
 
-2. `local.yaml` - Main playbook that orchestrates all tasks in this order:
-   - Prompts for machine type (personal/work) - affects SSH key selection
-   - Updates Homebrew
-   - Executes task files in sequence:
-     - security (1Password, SSH setup)
-     - git-setup (global git config)
-     - cli-tools (Homebrew formulae)
-     - gui-tools (Homebrew casks)
-     - zsh (shell configuration)
-     - app-store-apps (Mac App Store apps via `mas`)
-     - osx (macOS system preferences via `defaults`)
-     - node (nvm and Node LTS)
-     - dotfiles (clones and stows from github.com/mintuz/.dotfiles)
-     - dock (configures Dock apps and layout with dockutil)
+The SSH prompt defaults to No. Without a terminal, preserve SSH unless
+`--1password-ssh` is explicit. Pass the selection as `manage_ssh_config` to
+Ansible; both OS defaults are false. The choice is per run, not persisted.
+Declining must leave existing SSH files and agents untouched, including a
+configuration installed by an earlier opt-in. Tagged Make commands do not
+prompt; direct SSH setup requires `-e manage_ssh_config=true`.
 
-### Critical Assumptions
+Dotfiles default to enabled on both OSes. Ubuntu full setup asks
+`Install your dotfiles? [Y/n]` before bootstrap; Enter and unattended runs
+keep the default. Pass the answer as `install_dotfiles` to Ansible.
+`--dotfiles` and `--skip-dotfiles` work on both OSes and skip the prompt.
+Bootstrap-only runs do not ask about or install dotfiles. Tagged Make commands
+use the OS defaults without prompts; direct Ansible runs can override them.
 
-1. **1Password SSH Agent**: Must be pre-installed and configured as SSH agent before running playbook
-2. **Dual GitHub Identity**: Uses separate SSH keys for personal (`personal_github.pub`) and work (`work_github.pub`) stored in `.ssh/` directory and 1Password
-3. **Mac App Store**: User must be logged in for `mas` to install apps
-4. **Dotfiles Dependency**: Relies on external dotfiles repo (github.com/mintuz/.dotfiles) with its own install script
+Bootstrap runs as the normal user, then invokes `local.yaml` through the sudo
+wrapper. Setup selects the platform and inventories, validates prerequisites,
+and updates Homebrew before running SSH, Git, CLI, GUI, Zsh, App Store, macOS
+preferences, Node, dotfiles, and Dock tasks in that order. OS and feature guards
+skip inapplicable tasks. Bootstrap helpers are sourced by `install.sh`, not
+standalone entry points; do not duplicate their work in an Ansible bootstrap.
 
-### Task Files Organization
+Both playbooks load `defaults.yaml` and select platform defaults before their
+work. Ansible extra variables (`-e`) override these defaults. Make passes
+`PROFILE` as `machine_type`; it defaults to `personal` on each invocation.
+`make update` updates all installed tools, regardless of their package layer.
 
-All task files live in `ansible/tasks/` and use Ansible modules:
-- `community.general.homebrew` - CLI tool installation
-- `community.general.homebrew_cask` - GUI app installation
-- `community.general.mas` - Mac App Store apps (by numeric ID)
-- `git_config` - Git global configuration
-- `osx_defaults` / `shell: defaults write` - macOS system preferences
-- `ansible.builtin.template` - Config file templating from `ansible/templates/`
+## Package ownership
 
-## Common Commands
+Keep inventory under `packages/`. The selector combines `shared/`,
+`shared/<profile>/`, `<mac|linux>/`, and `<mac|linux>/<profile>/` in that order.
+Each layer may contain `Brewfile.cli`, `Brewfile.cli-optional`, `Brewfile.gui`,
+`Brewfile.gui-optional`, and `Brewfile.app-store`. Create missing layers only
+when there are packages to put in them. Profiles are additive, not uninstall
+lists. Keep Mac desktop apps under `packages/mac/`; CLI casks may be shared
+when their package supports Linux. Required CLI failures stop setup;
+optional CLI and GUI installation failures are reported and tolerated.
+Reject unknown inventory paths and keep the shared CLI inventory required.
+Report failed App Store installations even though setup continues.
 
-### Full Setup (Fresh Mac)
-```bash
-./install.sh
-# Will prompt for brew/ansible updates (y/N)
-# Will prompt for machine type (personal/work)
-# Will prompt for sudo password (-K flag)
-```
+For example, add a CLI needed by both work platforms to
+`packages/shared/work/Brewfile.cli`; a personal Ubuntu-only CLI belongs in
+`packages/linux/personal/Brewfile.cli`. No Linux inventory exists yet because
+Ubuntu currently uses only shared packages. Do not create empty placeholders.
 
-### Run Specific Task Tags
-```bash
-# Only install CLI tools
-ansible-playbook local.yaml -K --tags "cli"
+## Platform boundaries
 
-# Only configure git
-ansible-playbook local.yaml -K --tags "git-personal"
+Select the OS and profile through `ansible/tasks/platform.yaml` before setup
+or update tasks. Keep platform paths and defaults in `ansible/vars/`.
+Put Mac-only tasks under `ansible/tasks/mac/` and guard their imports in
+`local.yaml`. Use Homebrew for shared development tools and apt for Ubuntu
+bootstrap prerequisites. Do not add Mac-only commands to shared tasks.
 
-# Only install App Store apps
-ansible-playbook local.yaml -K --tags "app-store"
+Both platforms preserve existing SSH configuration and agents by default.
+Dotfiles installation delegates to the external repository's `install.sh`;
+`make dotfiles` installs or refreshes them on either OS. The external shell
+configuration still contains hardcoded Mac paths, so distinguish installation
+from verified Linux shell compatibility. Never modify that external repository
+as an incidental part of machine setup work.
 
-# Only configure macOS settings
-ansible-playbook local.yaml -K --tags "osx"
+When opting in, the 1Password agent must be enabled separately. Mac bootstrap
+installs the desktop app early only when requested for SSH. The software
+inventories still include the Mac password manager and shared CLI regardless
+of SSH choice. On Ubuntu, an existing `SSH_AUTH_SOCK` selects the literal
+`IdentityAgent "SSH_AUTH_SOCK"`, not its temporary socket path; otherwise use
+`~/.1password/agent.sock`. Headless users forward their client agent. Do not
+install the Linux desktop app as part of headless bootstrap. Mac App Store
+installation requires the App Store to be signed in.
 
-# Only setup dock
-ansible-playbook local.yaml -K --tags "dock"
+SSH public key filenames, Git name/email, dotfiles source,
+and pnpm global packages are configured in `defaults.yaml`. Profile selection
+changes the primary SSH key but does not invent a different Git identity.
+Keep SSH backups before managed SSH writes and use per-task privilege
+escalation rather than running the playbook as root.
+Keep backups inside the SSH task with unique timestamps so direct or mixed
+tag runs cannot bypass them or overwrite an earlier backup. Refuse to discard
+local changes in the external dotfiles checkout.
 
-# SSH and security setup
-ansible-playbook local.yaml -K --tags "ssh,security"
-```
+Reuse existing sudo authorization on headless machines; prompt only when it
+is needed and a terminal is available. Keep sudo authorization alive while
+the command runs and remove temporary credential files on exit.
 
-### Update Existing Installation
-```bash
-./install.sh
-# Answer 'y' to update brew, ansible, and ansible extensions
-# Re-runs full playbook (idempotent, but re-prompts for machine type)
-```
+Use `ansible_facts` rather than deprecated injected fact variables. Preserve
+Homebrew Node until a working nvm default exists, and install Node before
+unlinking its previous provider. Propagate installer errors; runtime updates
+may continue independent components but must return failure at the end when
+any component failed. A missing tool is skipped, not reported as updated.
 
-### Test Playbook Syntax
-```bash
-ansible-playbook local.yaml --syntax-check
-```
+## Making and validating changes
 
-## Adding New Software
+Add software to its Brewfile rather than embedding package lists in tasks.
+For new configuration behavior, edit the responsible task and wire it through
+`local.yaml` only if it needs a new task file. Preserve task tags so both full
+setup and targeted commands work. Platform selection must retain `always`;
+inventory preview must remain read-only. Keep OS defaults separate from shared
+user preferences and update this guide and `README.md` when commands change.
 
-### CLI Tools
-Add to `ansible/tasks/cli-tools.yaml` under the appropriate comment category (Core Tools, Development Tools, etc.)
+After code or inventory changes, run `make check` with Homebrew, Ansible,
+Python 3, and the collections from `make deps` available. It covers all four
+OS/profile combinations and SSH/dotfiles defaults and overrides, plus terminal
+prompt and flag checks with inert bootstrap scripts. Safety checks use temporary
+directories and fake commands. Use `make packages PROFILE=personal` and
+`make packages PROFILE=work` to inspect actual inventory selection on the host.
+ShellCheck can also check the Bash entry points and sourced bootstrap scripts.
 
-### GUI Applications
-Add to `ansible/tasks/gui-tools.yaml` under the appropriate comment category (Mac Utilities, Software Development, etc.)
-
-### Mac App Store Apps
-1. Find app ID: `mas search "App Name"` or check existing MAS account purchases
-2. Add to `ansible/tasks/app-store-apps.yaml` following the existing pattern with proper category comments
-
-### System Preferences
-Add `defaults write` commands to `ansible/tasks/osx.yaml` - see https://macos-defaults.com for reference
-
-### Dock Applications
-Add to `ansible/tasks/dock.yaml` in the `Setup dock` task's `with_items` list
-- Use full path: `/Applications/AppName.app`
-- Add spacers: `"'' --type spacer --section apps --after PreviousApp"`
-
-## Notes
-
-- All task files use `ignore_errors: yes` to prevent single failures from blocking entire setup
-- Variables `work_public_ssh_key` and `personal_public_ssh_key` are defined in `local.yaml` vars section
-- SSH config template is at `ansible/templates/ssh_config.j2`
-- Global gitignore template is at `ansible/templates/.global_gitignore`
-- The playbook configures git for "Adam Bulmer <mintuz1990@gmail.com>" (personal setup)
-- Dock setup references some apps that may not exist in gui-tools.yaml (e.g., Home.app, Arc.app, Vivaldi.app)
+Use a disposable machine or container for real bootstrap/install/update checks;
+do not run full setup on the development host merely to validate an edit.
+Syntax checks and mocked facts do not establish fresh-machine installation
+or interactive shell behavior; report those evidence limits explicitly.
