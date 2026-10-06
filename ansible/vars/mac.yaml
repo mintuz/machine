@@ -4,5 +4,6 @@ install_dotfiles: true
 pnpm_home: "{{ ansible_facts['env']['HOME'] }}/Library/pnpm"
 shell_path: /bin/zsh
 manage_remote_login: false
+revoke_remote_login: false
 remote_login_sshd_file: /etc/ssh/sshd_config.d/010-remote-login.conf
 tailscale_cli: /Applications/Tailscale.app/Contents/MacOS/Tailscale

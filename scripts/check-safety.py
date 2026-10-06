@@ -149,6 +149,68 @@ fi''')
     assert not remote_calls.exists() and not any((remote_home / ".ssh").iterdir())
     print("PASS: Remote Login runs only when requested on macOS, and stops before changes without phone keys")
 
+    # Exercise revocation through the real entry point without host services.
+    remote_running = fixture / "remote-running"
+    remote_disabled = fixture / "remote-disabled"
+    remote_service_calls = fixture / "remote-service-calls"
+    command("launchctl", '''
+printf '%s\\n' "$*" >> "$TEST_REMOTE_CALLS"
+case "$*" in
+  "print-disabled system")
+    if [ -f "$TEST_REMOTE_DISABLED" ]; then state=disabled; else state=enabled; fi
+    printf '"com.openssh.sshd" => %s\\n' "$state" ;;
+  "print system/com.openssh.sshd")
+    if [ -f "$TEST_REMOTE_RUNNING" ]; then exit 0; else exit 113; fi ;;
+  "disable system/com.openssh.sshd") touch "$TEST_REMOTE_DISABLED" ;;
+  "bootout system/com.openssh.sshd")
+    if [ "${TEST_REMOTE_STOP_FAIL:-0}" = 1 ]; then exit 5; fi
+    rm -f "$TEST_REMOTE_RUNNING" ;;
+  "enable system/com.openssh.sshd") rm -f "$TEST_REMOTE_DISABLED" ;;
+  "bootstrap system /System/Library/LaunchDaemons/ssh.plist")
+    touch "$TEST_REMOTE_RUNNING"
+    if [ "${TEST_REMOTE_BOOTSTRAP_FAIL:-0}" = 1 ]; then exit 5; fi ;;
+  *) exit 99 ;;
+esac''')
+    remote_env = dict(env, TEST_REMOTE_RUNNING=str(remote_running),
+                      TEST_REMOTE_DISABLED=str(remote_disabled), TEST_REMOTE_CALLS=str(remote_service_calls))
+    # Revocation must not depend on working Homebrew or Tailscale.
+    forbidden_calls = fixture / "remote-forbidden-calls"
+    command("brew", f'echo brew >> "{forbidden_calls}"\nexit 99')
+    command("tailscale", f'echo tailscale >> "{forbidden_calls}"\nexit 99')
+    old_phone_key = "ssh-ed25519 AAAA lost-phone-fixture\n"
+    authorized_keys = remote_home / ".ssh/authorized_keys"
+    authorized_keys.write_text(old_phone_key)
+    remote_running.touch()
+    revoke_vars = {"ansible_facts": mac, "ansible_become": False, "revoke_remote_login": True,
+                   "remote_login_public_keys": [], "remote_login_launchctl": str(binary / "launchctl"),
+                   "tailscale_cli": str(binary / "tailscale")}
+    for facts, opted_in, check_mode in ((linux, True, False), (mac, False, False), (mac, True, True)):
+        args = ["ansible-playbook", str(root / "local.yaml"), "--tags", "remote-login-revoke", "-e",
+                json.dumps(dict(revoke_vars, ansible_facts=facts, revoke_remote_login=opted_in))]
+        result = subprocess.run(args + (["--check"] if check_mode else []),
+                                env=remote_env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert authorized_keys.read_text() == old_phone_key and remote_running.exists()
+        assert not remote_disabled.exists()
+    result = subprocess.run(["ansible-playbook", str(root / "local.yaml"), "--tags", "remote-login-revoke",
+                             "-e", json.dumps(revoke_vars)], env=remote_env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert authorized_keys.read_text() == "" and remote_disabled.exists() and not remote_running.exists()
+    key_backups = list((remote_home / ".dev-setup-backups").rglob("authorized_keys"))
+    assert any(backup.read_text() == old_phone_key for backup in key_backups)
+    assert not forbidden_calls.exists(), "Revocation invoked Homebrew or Tailscale"
+    assert not any(line.startswith(("enable ", "bootstrap ")) for line in remote_service_calls.read_text().splitlines())
+    print("PASS: explicit macOS revocation removes the last key offline, preserves a backup, and leaves SSH disabled")
+
+    activation_vars = dict(revoke_vars, platform="mac", manage_remote_login=True, revoke_remote_login=False)
+    result = subprocess.run(["ansible-playbook", str(root / "local.yaml"), "--tags", "remote-login",
+                             "--start-at-task", "Start Remote Login at boot", "-e", json.dumps(activation_vars)],
+                            env=dict(remote_env, TEST_REMOTE_BOOTSTRAP_FAIL="1"), text=True, capture_output=True)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert remote_disabled.exists() and not remote_running.exists()
+    assert authorized_keys.read_text() == "" and not forbidden_calls.exists()
+    print("PASS: a partial SSH activation failure is reported and leaves startup and the listener disabled")
+
     sshd = Path("/usr/sbin/sshd")
     if os.uname().sysname == "Darwin" and sshd.exists():
         config = fixture / "sshd"
@@ -181,5 +243,65 @@ fi''')
             result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], text=True, capture_output=True)
             assert (result.returncode == 0) == passes, name + "\n" + result.stdout + result.stderr
         print("PASS: Remote Login SSH settings override weaker global settings, and other Match blocks or account rules stop the run")
+
+        # The real deployment helper must stop acceptance before it validates or
+        # replaces configuration, and restore rejected changes while staying off.
+        command("sshd", '''
+if [ -f "$TEST_REMOTE_RUNNING" ]; then
+  echo "SSH configuration was checked while the listener was running" >&2
+  exit 91
+fi
+exec /usr/sbin/sshd "$@"''')
+        deployment_settings = dict(settings, remote_login_launchctl=str(binary / "launchctl"),
+                                   remote_login_config_owner=str(os.getuid()),
+                                   remote_login_config_group=str(os.getgid()),
+                                   remote_login_sshd=[str(binary / "sshd"), "-f", str(config / "sshd_config"),
+                                                      "-h", str(config / "host_key")])
+        play = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+                 "vars": deployment_settings,
+                 "tasks": [{"ansible.builtin.import_tasks": str(root / "ansible/tasks/mac/remote-login-config.yaml")}]}]
+        path.write_text(json.dumps(play))
+        original_config = "# Administrator policy before setup\nDenyUsers *\n"
+        for existed in (True, False):
+            if existed:
+                managed.write_text(original_config)
+                managed.chmod(0o600)
+            else:
+                managed.unlink()
+            remote_running.touch()
+            remote_disabled.unlink(missing_ok=True)
+            (config / "sshd_config").write_text(include + "Match Address 192.0.2.0/24\n    AllowUsers *\n")
+            result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)],
+                                    env=remote_env, text=True, capture_output=True)
+            assert result.returncode != 0, result.stdout + result.stderr
+            assert remote_disabled.exists() and not remote_running.exists()
+            if existed:
+                assert managed.read_text() == original_config
+                assert managed.stat().st_mode & 0o777 == 0o600
+            else:
+                assert not managed.exists(), "Rejected first-install configuration was left behind"
+        managed.write_text(original_config)
+        remote_running.touch()
+        result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)],
+                                env=dict(remote_env, TEST_REMOTE_STOP_FAIL="1"), text=True, capture_output=True)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert managed.read_text() == original_config and remote_running.exists()
+        (config / "sshd_config").write_text(include)
+        remote_disabled.unlink(missing_ok=True)
+        result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path), "--check"],
+                                env=remote_env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert managed.read_text() == original_config and remote_running.exists() and not remote_disabled.exists()
+        result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)],
+                                env=remote_env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert remote_disabled.exists() and not remote_running.exists()
+        effective = subprocess.run([str(sshd), "-T", "-f", str(config / "sshd_config"),
+                                    "-h", str(config / "host_key"), "-C", "user=tester,host=test,addr=100.64.0.1"],
+                                   text=True, capture_output=True, check=True)
+        assert "passwordauthentication no" in effective.stdout.splitlines()
+        assert [line for line in effective.stdout.splitlines() if line.startswith("allowusers ")] == [
+            "allowusers tester@100.64.0.0/10", "allowusers tester@fd7a:115c:a1e0::/48"]
+        print("PASS: rejected SSH configuration is restored or removed, stop failures prevent writes, and valid deployment stays off until activation")
     else:
         print("SKIP: the Remote Login SSH settings check needs macOS /usr/sbin/sshd")

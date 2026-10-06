@@ -43,6 +43,12 @@ See `README.md` for user-facing setup instructions and validation history.
 - `make remote-login` turns on Remote Login (SSH) for tailnet key logins on
   macOS. It passes `manage_remote_login=true`; the Mac default is false, and
   full setup does not prompt for it.
+- `make remote-login-revoke` is a separate Mac-only opt-in. It passes
+  `revoke_remote_login=true` with the `remote-login-revoke` tag; the default
+  is false. It disables SSH startup/listener and backs up then clears the
+  invoking user's `authorized_keys`, without requiring Homebrew, Tailscale,
+  or phone keys. Neither remote-login target changes Shields Up.
+  If both flags are true, skip enablement and run revocation.
 
 The SSH prompt defaults to No. Without a terminal, preserve SSH unless
 `--1password-ssh` is explicit. Pass the selection as `manage_ssh_config` to
@@ -127,23 +133,55 @@ is needed and a terminal is available. Keep sudo authorization alive while
 the command runs and remove temporary credential files on exit.
 
 Remote Login is Mac-only and opt-in per run, like managed SSH: a false flag
-leaves earlier changes in place. Keep it key-only and limited to tailnet
-addresses. Keep the limits in the managed file's `Match all` block, because
-`Match` settings override global settings in every file; and keep the key
-sources (`AuthorizedKeysFile`, `AuthorizedKeysCommand`, `TrustedUserCAKeys`)
-and `PubkeyAuthentication yes` pinned there. Lock down the SSH server before
-Remote Login is turned on: validate the file with `sshd -t`, check the
-effective settings with `sshd -T` (`remote-login-check.yaml`), and stop if
-sshd does not read the managed file, another file weakens the limits or adds
-a `Match` block, or a setting such as `DenyUsers`, `RefuseConnection`, or
-`ForceCommand` could block the account. Refuse those settings instead of
-overriding them. A later `Match` block can still add `AllowUsers` entries.
-Call macOS's `/usr/sbin/sshd` and `/usr/bin/ssh-keygen` by absolute path,
-because a Homebrew OpenSSH uses other configuration paths. Accept only key
-files that hold one public key line without options. Back up
-`authorized_keys` under `~/.dev-setup-backups` before each change; the listed
-phone keys replace the whole file. The tailnet policy, Little Snitch rules,
-and iPhone settings stay manual steps in `README.md`.
+leaves earlier changes in place. Keep normal post-unlock SSH key-only and
+limited to tailnet source addresses; do not extend that promise to
+FileVault's pre-unlock password SSH. Source restrictions do not bind the
+wildcard listener or stop Bonjour advertising. Shields Up is not a LAN
+firewall.
+
+Keep the limits in the managed file's `Match all` block, because `Match`
+settings override global settings in every file; keep key sources
+(`AuthorizedKeysFile`, `AuthorizedKeysCommand`, `TrustedUserCAKeys`) and
+`PubkeyAuthentication yes` pinned there. Disable SSH startup and unload any
+listener before snapshotting or deploying configuration. Reject
+symlink/non-regular managed configuration files and snapshot prior content,
+owner, group, and mode.
+Validate with `sshd -t` and check effective settings with `sshd -T`
+(`remote-login-check.yaml`). Stop if sshd does not read the managed file,
+another file weakens the limits or adds a `Match` block, or a setting such
+as `DenyUsers`, `RefuseConnection`, or `ForceCommand` could block the account.
+Refuse those settings instead of overriding them: a later `Match` block can
+still add `AllowUsers` entries. If deployment or the gate fails, restore
+the prior file and metadata, or remove the new file if previously absent.
+Leave Remote Login disabled and report the original failure.
+
+Only after the gate succeeds may keys, the access list, and startup change.
+If activation or the port check fails, disable startup and unload again.
+Never suggest manual enablement after a failed run. Run from the local
+console and warn that existing sessions may be interrupted. Stopping the
+listener and removing keys do not reliably terminate existing SSH or mosh
+sessions; incident response must inspect and terminate affected processes
+without indiscriminately killing herdr or local terminal sessions.
+
+Use macOS's `/usr/sbin/sshd` and `/usr/bin/ssh-keygen` by default, because
+Homebrew OpenSSH uses other configuration paths. Preserve the existing
+`remote_login_sshd` list override for isolated validation. All launchctl
+commands use `remote_login_launchctl | default('/bin/launchctl')` so tests
+can substitute a stateful executable that rejects unexpected operations.
+Enablement requires a nonempty list of key files, each containing one
+public key line without options. Back up `authorized_keys` under
+`~/.dev-setup-backups` before each change; listed keys replace the whole
+file. Removing the final key uses the separate revoke path, never empty-key
+enablement. Keep revocation independent of Tailscale status, Homebrew, and
+public-key inputs; retain the managed SSH configuration.
+
+Never change Shields Up or rewrite the control-server policy automatically.
+README setup must require a local firewall and review of all additive
+grants and legacy ACLs before activation, removing or narrowing matching
+broad rules. Require allow/deny policy tests, with the provider's
+administrator if necessary. Keep Shields Up on until setup and policy
+checks succeed, then document only explicit manual release. Keep network
+examples fictional and the iPhone, firewall, and incident steps manual.
 
 Use `ansible_facts` rather than deprecated injected fact variables. Preserve
 Homebrew Node until a working nvm default exists, and install Node before
@@ -164,7 +202,10 @@ After code or inventory changes, run `make check` with Homebrew, Ansible,
 Python 3, and the collections from `make deps` available. It covers all four
 OS/profile combinations and SSH/dotfiles defaults and overrides, plus terminal
 prompt and flag checks with inert bootstrap scripts. On macOS it also checks
-the effective Remote Login SSH server settings with an unprivileged `sshd -T`.
+the effective Remote Login SSH server settings with an unprivileged `sshd -T`,
+configuration rollback, and stop-before-write behaviour. A stateful `launchctl`
+substitute covers offline final-key revocation, check mode, and partial
+activation failure without changing host services.
 Safety checks use temporary directories and fake commands. Use
 `make packages PROFILE=personal` and `make packages PROFILE=work` to inspect
 actual inventory selection on the host.
@@ -174,5 +215,11 @@ Use a disposable machine or container for real bootstrap/install/update checks;
 do not run full setup on the development host merely to validate an edit.
 Syntax checks and mocked facts do not establish fresh-machine installation
 or interactive shell behavior; report those evidence limits explicitly.
-Preview Remote Login with `--check --diff`. A real run needs sudo and phone
-keys; only a connection from the phone proves the whole path.
+Remote Login's `--check --diff` mode is limited: it skips deployment, the
+effective-settings gate, and activation. Do not describe it as a full SSH
+configuration preview. A real enable run needs sudo and phone keys;
+revocation needs sudo but no keys or Tailscale connection. Only an actual
+phone connection and denied
+network paths establish end-to-end access and isolation. Never exercise
+real activation or revocation on the development host just to validate
+an edit.

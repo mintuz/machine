@@ -90,7 +90,8 @@ available and removes its temporary password helper when the command exits.
 | `make git PROFILE=work` | Configure Git using the configured name and email |
 | `make node` | Install nvm-managed Node LTS and configure pnpm |
 | `make dotfiles` | Install or refresh the external dotfiles on either OS |
-| `make remote-login` | Allow SSH key logins to this Mac from your tailnet, for example from an iPhone; macOS only, see [Remote access from an iPhone](#remote-access-from-an-iphone) |
+| `make remote-login` | Configure and enable SSH key logins on macOS; requires phone keys and the [remote access prerequisites](#before-you-start) |
+| `make remote-login-revoke` | Disable macOS SSH startup/listener and back up then clear your `authorized_keys`; existing sessions need separate action |
 | `make update` | Update installed Homebrew packages, CLI casks, and runtime tools; App Store only on Mac |
 | `make check` | Check routing, safety regressions, Brewfile parsing, shell syntax, and Ansible syntax |
 
@@ -173,9 +174,15 @@ Shared preferences live in `defaults.yaml`. OS defaults live in
 - `manage_remote_login` defaults to false on macOS. `make remote-login` sets it
   to true for one run; full setup does not ask about it. Setting it to false
   does not undo an earlier run. `remote_login_public_keys` lists phone public
-  key files in `.ssh/`, and `remote_login_sources` lists the address ranges
-  that can log in. `tailscale_cli` is the path of the Tailscale command-line
-  tool. See [Remote access from an iPhone](#remote-access-from-an-iphone).
+  key files in `.ssh/` and must not be empty when enabling access.
+  `remote_login_sources` limits the source addresses accepted for SSH logins;
+  it does not bind the listener to those interfaces. `tailscale_cli` is the
+  path of the Tailscale command-line tool. Neither remote-login command
+  changes Shields Up. `make remote-login-revoke` sets the separate,
+  default-false `revoke_remote_login` flag for one run. It needs neither
+  phone keys nor Homebrew nor a Tailscale connection.
+  If both opt-in flags are true, revocation takes precedence.
+  See [Remote access from an iPhone](#remote-access-from-an-iphone).
 - Ubuntu gets Homebrew shell initialization and Node/pnpm paths without
   requiring the external dotfiles. Zsh is installed through apt on Ubuntu,
   with Oh My Zsh and autosuggestions enabled. Homebrew Node stays linked
@@ -193,50 +200,126 @@ rerun does not imply a zero-change Ansible recap.
 
 ## Remote access from an iPhone
 
-`make remote-login` lets you log in to this Mac over SSH from devices in your
-Tailscale network (tailnet), for example an iPhone with Secure ShellFish or
-Moshi. It works on macOS only, and only when you run it. The Mac then accepts
-only key logins for your account, and only from tailnet addresses.
-
-The command does these steps in this order. It stops at the first problem.
-
-1. Checks the phone public keys, and checks that Tailscale is connected.
-   Each key file must hold one public key line without options.
-2. Creates the SSH host keys if they do not exist.
-3. Installs `/etc/ssh/sshd_config.d/010-remote-login.conf`. For every
-   connection, this file allows only key logins for your account, only from
-   `remote_login_sources`, and only with keys in `~/.ssh/authorized_keys`. It
-   also puts `~/.local/bin` and the Homebrew `bin` directory in `PATH` for SSH
-   commands, so that mosh and herdr work.
-4. Reads the effective SSH server settings. The run stops before it turns on
-   Remote Login if the SSH server does not read the file, if another file
-   weakens the limits or adds a `Match` block, or if another file sets a rule
-   that can stop your login (see [Security limits](#security-limits)).
-5. Backs up `~/.ssh/authorized_keys`, then replaces it with the listed phone
-   keys.
-6. Sets the Remote Login access list to your account only.
-7. Turns on Remote Login.
-8. Turns off Tailscale Shields Up, so that tailnet devices can connect.
-9. Shows the host name, the user name, and the SSH host key fingerprints. It
-   warns if `mosh-server` or `herdr` is not on the SSH `PATH`.
+`make remote-login` configures SSH access to this Mac from your Tailscale
+network (tailnet), for example from an iPhone with Secure ShellFish or Moshi.
+It works on macOS only, and only when you opt in. The key-only and
+source-address limits apply to normal SSH **after FileVault unlocks**, not
+to every boot state or every service on the Mac.
 
 ### Before you start
 
-- Install the Tailscale app on the Mac and on the iPhone. Sign in to the same
-  tailnet on both devices.
-- Install Moshi, Secure ShellFish, or both on the iPhone. Moshi has herdr
-  support. Secure ShellFish does not, so in it you start herdr yourself.
-- Run `make cli` to install mosh. It is in the personal Mac inventory.
-- Install herdr on the Mac from [herdr.dev](https://herdr.dev). SSH commands
-  find it in `~/.local/bin`, the Homebrew `bin` directory, or `/usr/local/bin`.
+Read these limits before enabling Remote Login:
+
+- Before FileVault unlocks after a restart, macOS can accept an SSH password
+  to unlock the disk. The managed SSH settings are on the locked data volume
+  and do not apply then (`man apple_ssh_and_filevault`). Use a strong login
+  password; do not assume the post-unlock key-only rules protect this path.
+  If you require key-only access in every boot state, do not enable the
+  built-in Remote Login service with this command.
+- Remote Login uses wildcard listeners and advertises SSH on the local
+  network with Bonjour. `remote_login_sources` restricts authentication, not
+  network exposure. **Tailscale Shields Up is not LAN protection.** Configure
+  and verify a local firewall before enabling Remote Login. Do not assume
+  a post-unlock application firewall protects FileVault's pre-unlock SSH.
+- Run setup, key changes, and revocation from a local console, not the SSH
+  connection you are changing. Setup disables and unloads Remote Login
+  before replacing its live configuration. Existing sessions may be
+  interrupted; stopping the listener does not reliably end all SSH or mosh
+  sessions.
+- Keep Shields Up on until setup and the policy checks below succeed.
+  Neither `make remote-login` nor `make remote-login-revoke` changes it.
+  Releasing it permits inbound traffic to any service allowed by the full
+  tailnet policy, including development servers if broad rules remain.
+
+Install the Tailscale app on the Mac and iPhone and sign in to the same
+tailnet. On the Mac, explicitly keep inbound tailnet connections blocked
+while preparing access:
+
+```bash
+tailscale set --shields-up=true
+```
+
+Install Moshi, Secure ShellFish, or both on the iPhone. Moshi has herdr
+support; in Secure ShellFish you start herdr yourself. Run `make cli` to
+install mosh from the personal Mac inventory. Install herdr from
+[herdr.dev](https://herdr.dev); SSH commands find it in `~/.local/bin`, the
+Homebrew `bin` directory, or `/usr/local/bin`.
+
+### Restrict network access before setup
+
+Review the **whole** Tailscale or Headscale access policy before activating
+SSH or releasing Shields Up. Grants and legacy ACLs are additive: adding a
+narrow rule does not cancel a broad allow rule. Remove or narrow every
+matching broad grant and ACL, including rules that allow all devices,
+all ports, or access through a group or tag. This repository never rewrites
+the control-server policy.
+
+Allow only the intended iPhone to reach this Mac on TCP port 22 (SSH) and
+UDP ports 60000–61000 (mosh). This is an illustrative grant, not a complete
+policy. The addresses `100.100.100.10` and `100.100.100.20` are fictional
+examples, not actual device addresses; replace them with your devices'
+addresses and include their IPv6 identities where applicable:
+
+```jsonc
+"hosts": { "iphone-example": "100.100.100.10", "mac-example": "100.100.100.20" },
+"grants": [{ "src": ["iphone-example"], "dst": ["mac-example"], "ip": ["tcp:22", "udp:60000-61000"] }]
+```
+
+Use your control server's policy tests to verify both allowed and denied
+traffic: the iPhone may reach those SSH/mosh ports; other devices may not;
+and the iPhone may not reach other Mac services. If you cannot inspect the
+full policy or run these tests, ask the provider or control-server
+administrator to do so and confirm the results before proceeding. Merely
+adding the example grant is not proof of isolation.
+
+Configure the local firewall, such as Little Snitch, before setup too.
+Allow incoming TCP 22 and UDP 60000–61000 only from the intended iPhone's
+tailnet addresses; block other sources, including LAN addresses. Review
+existing rules and their precedence so a broad allow cannot override these
+limits. Verify the rules for both IPv4 and IPv6. The command does not
+configure the firewall. A firewall rule allowing SSH is not a substitute
+for reviewing other exposed services.
+
+### What setup changes
+
+`make remote-login` performs these steps and stops on failure:
+
+1. Checks that the phone key list is nonempty, each file holds one public
+   key line without options, and Tailscale is connected.
+2. Creates SSH host keys if needed.
+3. Disables SSH startup and unloads its listener if loaded. Rejects a symlink
+   or non-regular file at `/etc/ssh/sshd_config.d/010-remote-login.conf` and
+   saves the previous regular file's content, owner, group, and mode, if
+   present.
+4. Installs the managed configuration. This limits normal post-unlock SSH
+   to key logins for your account from `remote_login_sources`, with keys only in
+   `~/.ssh/authorized_keys`. It also sets the SSH command `PATH` so mosh and
+   herdr can be found.
+5. Validates the configuration and effective SSH settings. If deployment
+   or this gate fails, restores the previous configuration, or removes the
+   new file if none existed, and leaves Remote Login disabled. The original
+   failure is reported.
+6. Only after the gate succeeds, backs up and replaces
+   `~/.ssh/authorized_keys` with the listed phone keys, and sets the Remote
+   Login access list to your account only.
+7. Enables Remote Login and checks the SSH port. An activation or port-check
+   failure disables startup and unloads the listener again.
+8. Shows connection details and SSH host key fingerprints, and warns if
+   `mosh-server` or `herdr` is not on the SSH `PATH`.
+
+If any step fails, fix the reported cause and rerun from the local console.
+Do not enable Remote Login manually in System Settings or with `launchctl`
+to bypass a failed run.
 
 ### Set up the Mac
 
-1. In Secure ShellFish, create a key on the Secure Enclave. The private key
+1. Complete the network policy and local firewall checks above. Leave
+   Shields Up on.
+2. In Secure ShellFish, create a key on the Secure Enclave. The private key
    cannot leave the iPhone.
-2. In Moshi, create an Ed25519 key. Turn on **Biometric for keys**. Keep
+3. In Moshi, create an Ed25519 key. Turn on **Biometric for keys**. Keep
    credential sync off.
-3. Copy each public key into `.ssh/` in this repository. For example, copy
+4. Copy each public key into `.ssh/` in this repository. For example, copy
    the public key on the iPhone, then run this command on the Mac. This needs
    Universal Clipboard.
 
@@ -244,7 +327,7 @@ The command does these steps in this order. It stops at the first problem.
    pbpaste > .ssh/iphone-shellfish.pub
    ```
 
-4. List the key files in `defaults.yaml`:
+5. List the key files in `defaults.yaml`:
 
    ```yaml
    remote_login_public_keys:
@@ -252,44 +335,35 @@ The command does these steps in this order. It stops at the first problem.
      - iphone-moshi.pub
    ```
 
-5. Optional: preview the changes. This command can ask for your password. It
-   does not change the Mac:
+   By default, `remote_login_sources` accepts SSH logins from all tailnet
+   addresses. Narrow it to the iPhone's Tailscale IPv4 and IPv6 addresses
+   if only that device should log in. If its addresses change, update the
+   list at the Mac. This authentication limit does not replace the policy
+   or firewall checks.
+6. Optional: run the limited check mode. It can ask for your password and
+   does not change the Mac. It skips configuration deployment, the effective
+   SSH settings gate, and activation; it is not a full configuration preview
+   or proof that enabling access will work:
 
    ```bash
    scripts/with-sudo-askpass.sh ansible-playbook local.yaml --tags remote-login -e manage_remote_login=true --check --diff
    ```
 
-6. Run `make remote-login`. Enter your password when it asks.
-7. Keep the host name and the fingerprints that the command shows.
-8. Open System Settings > General > Sharing, and make sure that Remote Login
-   is on. If it is off, turn it on there. The command turns on Remote Login
-   with `launchctl`; System Settings has not been checked after that method.
+7. At the local console, run `make remote-login`. Enter your password when
+   it asks. Keep the connection details and fingerprints it shows.
+8. Only after setup succeeds and the full policy and firewall checks pass,
+   explicitly allow inbound tailnet traffic:
 
-### Allow the iPhone to reach the Mac
+   ```bash
+   tailscale set --shields-up=false
+   ```
 
-The tailnet access policy must let the iPhone reach the Mac on TCP port 22
-(SSH) and UDP ports 60000–61000 (mosh). Add a grant like this one to the
-Tailscale or Headscale policy file. Replace the addresses with the Tailscale
-addresses of your devices:
-
-```jsonc
-"hosts": { "my-iphone": "100.64.0.10", "my-mac": "100.64.0.9" },
-"grants": [{ "src": ["my-iphone"], "dst": ["my-mac"], "ip": ["tcp:22", "udp:60000-61000"] }]
-```
-
-If somebody else runs the control server, for example a company Headscale
-server, ask an administrator to add the grant. That administrator then
-controls which devices can reach the Mac. The phone keys still control who
-can log in.
-
-If you use Little Snitch, add the rules yourself; the command cannot add them.
-Add these incoming rules for any process:
-
-1. Allow TCP port 22 and UDP ports 60000–61000 from `100.64.0.0/10` and
-   `fd7a:115c:a1e0::/48`.
-2. Deny TCP port 22 and UDP ports 60000–61000 from any server.
-
-Rules for addresses take priority over rules for any server.
+9. Set up the iPhone as described below. Then verify an actual iPhone
+   connection and denied connections from other devices, including LAN sources.
+   Check that unrelated Mac services are still unreachable.
+   If any result differs from the intended rules,
+   restore Shields Up and use `make remote-login-revoke` locally while you
+   fix the policy or firewall. Shields Up alone does not block LAN access.
 
 ### Set up the iPhone
 
@@ -315,34 +389,98 @@ Work inside herdr keeps running on the Mac when the phone disconnects.
 - To use the Mac with the lid closed, start an Amphetamine session that stops
   system sleep when the display is closed. Do not keep a closed Mac running
   in a bag, because it can overheat.
-- After a restart, you cannot connect until somebody logs in at the Mac.
-  FileVault keeps the data volume locked, and the Tailscale app starts only
-  after login. Install macOS updates when you are at the Mac.
+- After a restart, normal tailnet access needs somebody to unlock FileVault
+  and log in locally so the Tailscale app starts. This does not mean
+  pre-unlock password SSH is unavailable on other network paths. Install
+  macOS updates when you are at the Mac.
 - Sign in to Tailscale on the Mac again before its node key expires.
   `tailscale status --json` shows the expiry date in `Self.KeyExpiry`.
 
 ### Add or remove phone keys
 
-1. Add the key file name to `remote_login_public_keys`, or remove it.
-2. Run `make remote-login`.
+For changes that leave at least one trusted key:
 
-Each run replaces `~/.ssh/authorized_keys` with the listed keys. Keys that
-you add by hand, or that Moshi's Easy Pair adds, are removed. Before a change,
-the previous file is copied to
-`~/.dev-setup-backups/<timestamp>/remote-login/authorized_keys`.
+1. Add or remove filenames in `remote_login_public_keys`.
+2. Run `make remote-login` from the local console; this interrupts the
+   listener while it rechecks the configuration.
+
+Each run replaces `~/.ssh/authorized_keys` with the listed keys. Keys added
+by hand or by Moshi's Easy Pair are removed. Before each change to a nonempty
+file, it is backed up under
+`~/.dev-setup-backups/<timestamp>/remote-login-<previous-content-hash>/authorized_keys`.
+Backups are not active key files; do not restore a revoked phone key.
+
+To remove the final key, use `make remote-login-revoke` instead. Then remove
+its filename from `remote_login_public_keys` so a later setup cannot
+reinstall it. An empty list deliberately fails the enable command; it is
+not a revocation request. Removing a key prevents new authentication, not
+access through an already authenticated SSH or mosh session.
 
 ### Turn off remote access
 
-Setting `manage_remote_login` to false does not undo anything. To turn off
-remote access:
+Setting `manage_remote_login` to false does not undo an earlier run. At the
+local console, run:
 
-1. Turn off System Settings > General > Sharing > Remote Login. If System
-   Settings does not show it as on, run
-   `sudo launchctl bootout system/com.openssh.sshd` and then
-   `sudo launchctl disable system/com.openssh.sshd`.
-2. Run `tailscale set --shields-up=true`.
-3. Optional: remove the SSH server settings with
-   `sudo rm /etc/ssh/sshd_config.d/010-remote-login.conf`.
+```bash
+make remote-login-revoke
+```
+
+This Mac-only command opts in with `revoke_remote_login=true` and the
+`remote-login-revoke` tag. It disables SSH startup, unloads the listener
+if present, and backs up then clears the invoking user's
+`~/.ssh/authorized_keys`. It retains the managed SSH configuration. It needs
+sudo and the existing Ansible prerequisites, but not Homebrew, phone keys,
+or a working Tailscale connection. Neither full setup nor a false revoke
+flag revokes access.
+
+If Tailscale is available, also run `tailscale set --shields-up=true`.
+Revocation itself does not change Shields Up or the control-server policy.
+**Listener shutdown and key removal do not end all existing SSH or mosh
+sessions.** Use the incident steps below if an active session is untrusted.
+
+### If the iPhone is lost or compromised
+
+1. Revoke or remove the iPhone device in the tailnet control server. Ask its
+   administrator if you cannot do this yourself. Do not rely on this alone
+   to terminate existing Mac sessions.
+2. At the Mac's local console, run `make remote-login-revoke`. If available,
+   also run `tailscale set --shields-up=true`. Remove the lost phone's key
+   filenames from `remote_login_public_keys`.
+3. Identify established SSH connections, mosh UDP listeners, and their
+   process trees before terminating anything:
+
+   ```bash
+   sudo lsof -nP -iTCP -sTCP:ESTABLISHED
+   sudo lsof -nP -iUDP
+   ps ax -o pid=,ppid=,user=,tty=,command=
+   ```
+
+   Match remote addresses and ports to the affected account's `sshd` child
+   processes and `mosh-server` processes. Inspect their child shells and
+   jobs too; do not assume stopping one parent ends every child. If the
+   connection cannot be attributed, treat all remote sessions for that
+   account as suspect and review them individually.
+4. For each confirmed remote-session PID, verify it immediately before
+   signalling it. Replace `<PID>` below with that numeric PID; do not paste
+   the placeholder literally:
+
+   ```bash
+   ps -p <PID> -o pid=,ppid=,user=,tty=,command=
+   sudo kill -TERM <PID>
+   ps -p <PID> -o pid=,ppid=,user=,tty=,command=
+   ```
+
+   Repeat the connection and process listings to confirm that the affected
+   transports have gone. If a process remains, inspect it again before
+   considering `sudo kill -KILL <PID>`; forced termination can lose work.
+   Do not kill all processes for your account, all terminal sessions, or
+   herdr wholesale. Herdr work can survive a transport disconnect. Inspect
+   suspect work separately and preserve unrelated local sessions.
+5. Review what the compromised session could access, including credentials
+   and jobs it started. Rotate affected credentials where needed. Re-enable
+   access only with trusted replacement keys, reviewed policy/firewall
+   rules, and a successful `make remote-login` run; then release Shields Up
+   manually as in setup.
 
 ### Security limits
 
@@ -352,21 +490,12 @@ remote access:
   `PermitTTY no`, or `MaxSessions 0`. Another `Match` block could add a login
   that the limits do not cover, and those settings could stop your own
   login. `make remote-login` stops when it finds them.
-- After a restart, before FileVault unlocks, macOS accepts an SSH password
-  to unlock the disk. The SSH server settings do not apply at that time,
-  because macOS keeps them on the locked data volume
-  (`man apple_ssh_and_filevault`). Use a strong login password.
-- With Shields Up off, devices that the tailnet policy allows can reach every
-  service that listens on the Mac, for example development servers. Keep the
-  policy limited to the iPhone and the ports above.
-- Remote Login advertises SSH on the local network with Bonjour.
+- The key-only promise applies to normal post-unlock SSH. Review the
+  FileVault, wildcard-listener, Bonjour, and firewall warnings
+  [before setup](#before-you-start).
 - If `~/.ssh/config` sends SSH to the 1Password agent, outgoing SSH from an
   iPhone session, for example `git push`, waits for approval on the Mac
   screen.
-- By default, `remote_login_sources` accepts logins from every tailnet
-  address. To accept only the iPhone, replace the ranges with its two
-  Tailscale addresses. If the iPhone gets new addresses, you cannot log in
-  until you change the list at the Mac.
 
 ## Implementation and validation
 
@@ -404,7 +533,7 @@ Validation performed on 2026-09-21:
 - Dotfiles default/opt-out: routing and terminal prompt checks passed; the
   external dotfiles have not been runtime-tested on Linux.
 
-Validation performed on 2026-10-06 (Remote Login, macOS 26.6 on Apple silicon):
+Validation performed on 2026-10-06, before the security-review fixes:
 
 - `make check` passed. Each new check failed against a copy of the
   repository with one safeguard removed: the macOS guard, the password
@@ -412,8 +541,8 @@ Validation performed on 2026-10-06 (Remote Login, macOS 26.6 on Apple silicon):
   block check, the account-rule check, or the `RefuseConnection` check.
 - A check-mode run against the real Mac, without root, showed the planned
   changes and changed nothing.
-- The effective-settings check passed on a copy of this Mac's SSH
-  configuration. With the `Match all` block, weaker global settings in other
+- The effective-settings check passed on a copy of macOS SSH configuration.
+  With the `Match all` block, weaker global settings in other
   files (passwords, key logins turned off, extra key files, a user CA,
   `SetEnv`, `AllowUsers`) did not change the effective settings. Another
   `Match` block, a configuration that does not read the managed file,
@@ -426,7 +555,24 @@ Validation performed on 2026-10-06 (Remote Login, macOS 26.6 on Apple silicon):
   `SetEnv PATH`, SSH commands found `mosh-server` and the same
   `~/.local/bin/herdr` that the interactive shell uses.
 - A real `make remote-login` run with root, the `launchctl` and access-list
-  steps, and connections from an iPhone have not been tested.
+  steps, and connections from an iPhone have not been tested. This history
+  does not establish the later rollback or revocation behaviour.
+
+Security-review follow-up validation on 2026-10-06:
+
+- `make check` passed, including offline final-key revocation, check-mode
+  safety, partial activation failure, restoration of previous configuration,
+  removal of rejected first-install configuration, and refusal to replace
+  configuration when listener shutdown fails.
+- An isolated `make remote-login-revoke` run used a temporary home directory,
+  a generated public key, and a stateful `launchctl` substitute. It cleared
+  the key file, preserved its previous content in a backup, and left the
+  service model disabled and unloaded.
+- The production activation block recovered from a simulated partial
+  `bootstrap` failure. It reported failure and confirmed that the service
+  model was disabled and unloaded.
+- These checks did not call real privileged `launchctl` operations or
+  establish firewall, tailnet, FileVault boot, or iPhone behaviour.
 
 Fresh macOS installation, GUI/App Store behavior, Ubuntu x86_64, and other
 Ubuntu releases have not been runtime-tested. Repeat the disposable-machine

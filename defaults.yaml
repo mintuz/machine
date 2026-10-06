@@ -12,7 +12,7 @@ personal_public_ssh_key: personal_github.pub
 work_public_ssh_key: work_github.pub
 
 # Remote Login (make remote-login, Mac only). List phone public key files
-# from .ssh/. Logins are accepted only from these Tailscale address ranges.
+# from .ssh/. These source limits apply to normal post-unlock SSH, not FileVault unlock.
 remote_login_public_keys: []
 remote_login_sources:
   - 100.64.0.0/10
