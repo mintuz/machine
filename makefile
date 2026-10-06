@@ -1,4 +1,4 @@
-.PHONY: all personal work setup deps install cli gui app-store osx dock dotfiles git node update packages check
+.PHONY: all personal work setup deps install cli gui app-store osx dock dotfiles git node remote-login update packages check
 
 PROFILE ?= personal
 export PATH := /opt/homebrew/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:$(PATH)
@@ -27,6 +27,9 @@ dotfiles:
 
 git:
 	@$(PLAYBOOK) --tags git-personal
+
+remote-login:
+	@$(PLAYBOOK) --tags remote-login -e manage_remote_login=true
 
 update:
 	@$(WITH_SUDO_ASKPASS) ansible-playbook update.yaml -e machine_type=$(PROFILE)

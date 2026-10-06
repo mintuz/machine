@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check headless privilege handling and runtime-update failures with fake tools."""
+"""Check headless privilege handling, runtime-update failures, and Remote Login with fake tools."""
 import json
 import os
 from pathlib import Path
@@ -128,3 +128,58 @@ fi''')
                             env=env, text=True, capture_output=True)
     assert result.returncode != 0, "An nvm installation failure was masked by a successful alias command"
     print("PASS: a failed Node installation stops setup")
+
+    remote_calls = fixture / "remote-login-calls"
+    command("tailscale", f'echo "$*" >> "{remote_calls}"\necho \'{{"BackendState": "Running", "Self": {{}}}}\'')
+    remote_home = fixture / "remote-home"
+    (remote_home / ".ssh").mkdir(parents=True)
+    mac = {"system": "Darwin", "distribution": "MacOSX", "env": {"HOME": str(remote_home)},
+           "user_id": "tester", "date_time": {"iso8601_basic": "remote"}}
+    linux = dict(mac, system="Linux", distribution="Ubuntu")
+    for facts, extra in ((mac, {}), (linux, {}), (linux, {"manage_remote_login": True}), (mac, {"manage_remote_login": True})):
+        # --check and explicit empty keys keep the run harmless even if a guard regresses.
+        result = subprocess.run(["ansible-playbook", str(root / "local.yaml"), "--check", "--tags", "remote-login", "-e",
+                                 json.dumps({"ansible_facts": facts, "ansible_become": False, "remote_login_public_keys": [],
+                                             "tailscale_cli": str(binary / "tailscale"), **extra})],
+                                text=True, capture_output=True)
+        if facts is mac and extra:
+            assert result.returncode != 0 and "remote_login_public_keys" in result.stdout, result.stdout + result.stderr
+        else:
+            assert result.returncode == 0, result.stdout + result.stderr
+    assert not remote_calls.exists() and not any((remote_home / ".ssh").iterdir())
+    print("PASS: Remote Login runs only when requested on macOS, and stops before changes without phone keys")
+
+    sshd = Path("/usr/sbin/sshd")
+    if os.uname().sysname == "Darwin" and sshd.exists():
+        config = fixture / "sshd"
+        (config / "sshd_config.d").mkdir(parents=True)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(config / "host_key")], check=True)
+        managed = config / "sshd_config.d/010-remote-login.conf"
+        settings = {"remote_login_allow_users": ["tester@100.64.0.0/10", "tester@fd7a:115c:a1e0::/48"],
+                    "remote_login_path": "/opt/homebrew/bin:/usr/bin:/bin", "remote_login_sshd_file": str(managed),
+                    "remote_login_sshd": [str(sshd), "-f", str(config / "sshd_config"), "-h", str(config / "host_key")],
+                    "ansible_facts": {"user_id": "tester"}, "ansible_become": False}
+        play = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": settings,
+                 "tasks": [{"ansible.builtin.template": {
+                               "src": str(root / "ansible/templates/sshd_remote_login.conf.j2"), "dest": str(managed)}},
+                           {"ansible.builtin.import_tasks": str(root / "ansible/tasks/mac/remote-login-check.yaml")}]}]
+        path.write_text(json.dumps(play))
+        # Files before and after the managed file weaken global settings.
+        (config / "sshd_config.d/000-earlier.conf").write_text(
+            "PasswordAuthentication yes\nAuthenticationMethods any\nPubkeyAuthentication no\n"
+            "AuthorizedKeysFile .ssh/authorized_keys .ssh/extra_keys\nSetEnv LANG=C\n")
+        (config / "sshd_config.d/100-later.conf").write_text("KbdInteractiveAuthentication yes\nAllowUsers tester\n")
+        include = f"Include {config}/sshd_config.d/*\n"
+        cases = [("weaker global settings", lambda: include, True),
+                 ("another Match block", lambda: include + "Match Address 192.168.0.0/16\n    AllowUsers tester\n", False),
+                 ("managed file not read; its settings under a conditional Match",
+                  lambda: managed.read_text().replace("Match all", "Match Address *,!192.168.0.0/16"), False),
+                 ("a rule that can block the account", lambda: include + "DenyUsers tester\n", False),
+                 ("a setting that refuses every connection", lambda: include + "RefuseConnection yes\n", False)]
+        for name, main, passes in cases:
+            (config / "sshd_config").write_text(main())
+            result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], text=True, capture_output=True)
+            assert (result.returncode == 0) == passes, name + "\n" + result.stdout + result.stderr
+        print("PASS: Remote Login SSH settings override weaker global settings, and other Match blocks or account rules stop the run")
+    else:
+        print("SKIP: the Remote Login SSH settings check needs macOS /usr/sbin/sshd")

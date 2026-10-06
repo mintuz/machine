@@ -11,4 +11,11 @@ dotfiles_conflict_paths:
 personal_public_ssh_key: personal_github.pub
 work_public_ssh_key: work_github.pub
 
+# Remote Login (make remote-login, Mac only). List phone public key files
+# from .ssh/. Logins are accepted only from these Tailscale address ranges.
+remote_login_public_keys: []
+remote_login_sources:
+  - 100.64.0.0/10
+  - fd7a:115c:a1e0::/48
+
 pnpm_global_packages: []

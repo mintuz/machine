@@ -31,6 +31,8 @@
       when: manage_ssh_config | bool
     - import_tasks: ansible/tasks/git-setup.yaml
     - import_tasks: ansible/tasks/cli-tools.yaml
+    - import_tasks: ansible/tasks/mac/remote-login.yaml
+      when: platform == 'mac' and manage_remote_login | bool
     - import_tasks: ansible/tasks/mac/gui-tools.yaml
       when: platform == 'mac'
     - import_tasks: ansible/tasks/zsh.yaml

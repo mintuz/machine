@@ -21,9 +21,9 @@ See `README.md` for user-facing setup instructions and validation history.
 | `ansible/tasks/platform.yaml` | OS/profile validation and inventory selection |
 | `packages/` | Homebrew package inventories; no installation logic |
 | `ansible/tasks/` | Shared SSH, Git, CLI, shell, Node, and dotfiles tasks |
-| `ansible/tasks/mac/` | Mac GUI, App Store, system preferences, and Dock tasks |
-| `ansible/templates/` | SSH configuration and global Git ignore templates |
-| `.ssh/` | Public SSH keys used by managed SSH setup; never private keys |
+| `ansible/tasks/mac/` | Mac GUI, App Store, system preferences, Remote Login, and Dock tasks |
+| `ansible/templates/` | SSH client and server configuration and global Git ignore templates |
+| `.ssh/` | Public SSH keys used by managed SSH setup and Remote Login; never private keys |
 | `ansible.cfg`, `inventory`, `requirements.yaml` | Local Ansible execution and collection dependencies |
 | `scripts/check-platforms.py`, `scripts/check-safety.py` | Routing and safety regression checks |
 
@@ -40,6 +40,9 @@ See `README.md` for user-facing setup instructions and validation history.
 - `make packages PROFILE=work` previews selected inventories without writes.
 - `make check` runs shell syntax, package-selection checks, Brewfile parsing,
   safety regressions, and Ansible syntax checks without installing packages.
+- `make remote-login` turns on Remote Login (SSH) for tailnet key logins on
+  macOS. It passes `manage_remote_login=true`; the Mac default is false, and
+  full setup does not prompt for it.
 
 The SSH prompt defaults to No. Without a terminal, preserve SSH unless
 `--1password-ssh` is explicit. Pass the selection as `manage_ssh_config` to
@@ -57,10 +60,11 @@ use the OS defaults without prompts; direct Ansible runs can override them.
 
 Bootstrap runs as the normal user, then invokes `local.yaml` through the sudo
 wrapper. Setup selects the platform and inventories, validates prerequisites,
-and updates Homebrew before running SSH, Git, CLI, GUI, Zsh, App Store, macOS
-preferences, Node, dotfiles, and Dock tasks in that order. OS and feature guards
-skip inapplicable tasks. Bootstrap helpers are sourced by `install.sh`, not
-standalone entry points; do not duplicate their work in an Ansible bootstrap.
+and updates Homebrew before running SSH, Git, CLI, Remote Login, GUI, Zsh, App
+Store, macOS preferences, Node, dotfiles, and Dock tasks in that order. OS and
+feature guards skip inapplicable tasks. Bootstrap helpers are sourced by
+`install.sh`, not standalone entry points; do not duplicate their work in an
+Ansible bootstrap.
 
 Both playbooks load `defaults.yaml` and select platform defaults before their
 work. Ansible extra variables (`-e`) override these defaults. Make passes
@@ -122,6 +126,25 @@ Reuse existing sudo authorization on headless machines; prompt only when it
 is needed and a terminal is available. Keep sudo authorization alive while
 the command runs and remove temporary credential files on exit.
 
+Remote Login is Mac-only and opt-in per run, like managed SSH: a false flag
+leaves earlier changes in place. Keep it key-only and limited to tailnet
+addresses. Keep the limits in the managed file's `Match all` block, because
+`Match` settings override global settings in every file; and keep the key
+sources (`AuthorizedKeysFile`, `AuthorizedKeysCommand`, `TrustedUserCAKeys`)
+and `PubkeyAuthentication yes` pinned there. Lock down the SSH server before
+Remote Login is turned on: validate the file with `sshd -t`, check the
+effective settings with `sshd -T` (`remote-login-check.yaml`), and stop if
+sshd does not read the managed file, another file weakens the limits or adds
+a `Match` block, or a setting such as `DenyUsers`, `RefuseConnection`, or
+`ForceCommand` could block the account. Refuse those settings instead of
+overriding them. A later `Match` block can still add `AllowUsers` entries.
+Call macOS's `/usr/sbin/sshd` and `/usr/bin/ssh-keygen` by absolute path,
+because a Homebrew OpenSSH uses other configuration paths. Accept only key
+files that hold one public key line without options. Back up
+`authorized_keys` under `~/.dev-setup-backups` before each change; the listed
+phone keys replace the whole file. The tailnet policy, Little Snitch rules,
+and iPhone settings stay manual steps in `README.md`.
+
 Use `ansible_facts` rather than deprecated injected fact variables. Preserve
 Homebrew Node until a working nvm default exists, and install Node before
 unlinking its previous provider. Propagate installer errors; runtime updates
@@ -140,12 +163,16 @@ user preferences and update this guide and `README.md` when commands change.
 After code or inventory changes, run `make check` with Homebrew, Ansible,
 Python 3, and the collections from `make deps` available. It covers all four
 OS/profile combinations and SSH/dotfiles defaults and overrides, plus terminal
-prompt and flag checks with inert bootstrap scripts. Safety checks use temporary
-directories and fake commands. Use `make packages PROFILE=personal` and
-`make packages PROFILE=work` to inspect actual inventory selection on the host.
+prompt and flag checks with inert bootstrap scripts. On macOS it also checks
+the effective Remote Login SSH server settings with an unprivileged `sshd -T`.
+Safety checks use temporary directories and fake commands. Use
+`make packages PROFILE=personal` and `make packages PROFILE=work` to inspect
+actual inventory selection on the host.
 ShellCheck can also check the Bash entry points and sourced bootstrap scripts.
 
 Use a disposable machine or container for real bootstrap/install/update checks;
 do not run full setup on the development host merely to validate an edit.
 Syntax checks and mocked facts do not establish fresh-machine installation
 or interactive shell behavior; report those evidence limits explicitly.
+Preview Remote Login with `--check --diff`. A real run needs sudo and phone
+keys; only a connection from the phone proves the whole path.
