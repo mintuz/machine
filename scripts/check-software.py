@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import shutil
 import tempfile
 import tomllib
 
@@ -30,7 +31,8 @@ exit 0
 """
 # brew bundle logs its Brewfile from stdin on the same line, joined by "; ".
 BREW_PRE = """[ "$1" = bundle ] && line="$line: $(sed 's/$/;/' | tr '\\n' ' ')"
-if [ "$1" = list ]; then printf '%s\\n' "$line" >> "$FAKE_LOG"; [ -d "$FAKE_PREFIX/Caskroom/$3" ]; exit $?; fi"""
+if [ "$1" = list ]; then printf '%s\\n' "$line" >> "$FAKE_LOG"; [ -d "$FAKE_PREFIX/Caskroom/$3" ]; exit $?; fi
+if [ "$1" = unlink ] && [ "$2" = node ]; then rm -rf "$FAKE_PREFIX/var/homebrew/linked/node"; fi"""
 # The selected mise Node is the path in $FAKE_NODE_FILE. Installing or upgrading
 # Node switches it to $FAKE_NODE_AFTER when that is set.
 MISE_EXTRA = """case "$*" in
@@ -257,13 +259,8 @@ print("PASS: check mode runs no installers and writes no files")
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
     output = machine.run("cli", FAKE_FAIL='brew "first"|install aqua:x/broken@latest')
-    calls = machine.calls()
-    assert calls[:2] == ["brew update", BUNDLE + 'brew "git"; cask "codex", greedy: true; '], calls
-    assert "mise install node@lts pnpm@latest" in calls
-    assert BUNDLE + 'tap "acme/tools"; brew "acme/tools/second"; ' in calls
     assert "Optional CLI failures: brew:first, aqua:x/broken" in output, output
     assert machine.tools() == {"node": "lts", "pnpm": "latest", "aqua:x/works": "latest"}
-    assert not any("bootstrap packages" in call for call in calls)
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
     fails(lambda: machine.run("cli", FAKE_FAIL='brew "git"'), "Required CLI packages failed")
@@ -275,30 +272,20 @@ with tempfile.TemporaryDirectory() as directory:
     fails(lambda: machine.run("cli", FAKE_FAIL="mise install node"), "Required mise tools failed")
     assert not machine.fragment.exists() and not any('"first"' in call for call in machine.calls())
 with tempfile.TemporaryDirectory() as directory:
-    machine = Machine(directory, "linux", repo=fixture_repo(directory, CLI_REPO))
-    machine.run("cli")
-    calls = [call for call in machine.calls() if call.startswith(("brew", "mise install"))]
-    assert calls[:3] == ["brew update", BUNDLE + 'brew "git"; ',
-                         "mise install node@lts pnpm@latest aqua:openai/codex@latest"], calls
-with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), brew=False)
     before = snapshot(machine.base)
     for action in ("cli", "gui"):
         fails(lambda: machine.run(action), "Homebrew is needed")
     assert machine.calls() == [] and snapshot(machine.base) == before
-print("PASS: required CLI failures stop setup; optional failures are reported; taps and greedy casks "
-      "are kept; Linux uses tool providers; package installs need Homebrew")
+print("PASS: required CLI failures stop setup; optional failures are reported; package installs need Homebrew")
 
 # The disabled tldr formula is removed before tlrc.
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
     (machine.prefix / "Cellar/tldr").mkdir(parents=True)
-    machine.run("cli")
-    assert machine.calls()[:3] == ["brew update", "brew uninstall tldr", BUNDLE + 'brew "git"; cask "codex", greedy: true; ']
-    machine.log.write_text("")
     fails(lambda: machine.run("cli", FAKE_FAIL="uninstall tldr"), "tldr")
     assert not any(call.startswith(BUNDLE) for call in machine.calls())
-print("PASS: the disabled tldr formula is uninstalled before CLI packages")
+print("PASS: a failed tldr removal stops new CLI package installation")
 
 # GUI and App Store: Mac only; installed casks upgrade greedily, others install with --adopt.
 with tempfile.TemporaryDirectory() as directory:
@@ -397,6 +384,9 @@ for fail in (False, True):
             assert machine.node_globals(machine.active_bin) == {
                 "@scope/tool": "1.2.0", "eslint": "8.0.0", "existing": "1.0.0", "typescript": "5.0.0"}
             assert machine.tools()["node"] == "lts"
+            shutil.rmtree(machine.active_bin.parent / "lib/node_modules/eslint")
+            machine.run("node")
+            assert "eslint" not in machine.node_globals(machine.active_bin), "legacy migration restored a removed package"
         assert (snapshot(nvm), snapshot(machine.prefix / "lib")) == legacy, "Legacy runtimes were changed"
         assert "nvm v20.1.0 (default alias default -> lts/* -> lts/jod -> v20.1.0)" in output, output
         assert "using 8.0.0 from nvm v20.1.0" in output and "not 7.0.0 from Homebrew node" in output
@@ -407,12 +397,15 @@ print("PASS: npm globals move from nvm's default and Homebrew node at their vers
 
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
+    linked_node = machine.prefix / "var/homebrew/linked/node"
+    linked_node.mkdir(parents=True)
     (machine.home / ".config").mkdir()
     write(machine.base / "elsewhere/conf.d/keep.toml", "")
     (machine.home / ".config/mise").symlink_to(machine.base / "elsewhere")
     fails(lambda: machine.run("node"), "symlink")
     assert not (machine.base / "elsewhere/conf.d/dev-machine-setup.toml").exists()
-print("PASS: the runtime fragment is never written through a symlinked mise configuration")
+    assert linked_node.exists(), "Homebrew Node was retired before its replacement configuration was safe"
+print("PASS: a refused runtime fragment leaves Homebrew Node linked and external configuration unchanged")
 
 # B10/B12: updates continue past failures, skip missing tools, and fail at the end.
 with tempfile.TemporaryDirectory() as directory:

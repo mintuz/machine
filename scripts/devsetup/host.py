@@ -112,15 +112,19 @@ DOCK_ITEMS = (
 def run(action: str, config: dict, *, check: bool = False) -> None:
     """Apply one host action: preflight, bootstrap, git, zsh, fzf, osx, dock, dotfiles.
 
-    With ``check`` nothing changes: preflight runs as usual, bootstrap and git
-    report what they would change, and the other actions only say they are not
-    previewed.
+    With ``check`` preflight validates prerequisites without refreshing Homebrew,
+    bootstrap and git report what they would change, and the other actions only
+    say they are not previewed.
     """
     actions = {"preflight": preflight, "bootstrap": bootstrap, "git": git, "zsh": zsh,
                "fzf": fzf, "osx": osx, "dock": dock, "dotfiles": dotfiles}
     if action not in actions:
         raise ValueError(f"Unknown host action {action!r}")
-    if not check or action == "preflight":
+    if action == "preflight":
+        preflight(config)
+        if not check:
+            _brew(config, "update")
+    elif not check:
         actions[action](config)
     elif action in ("bootstrap", "git"):
         actions[action](config, check=True)

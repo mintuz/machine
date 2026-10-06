@@ -1,9 +1,10 @@
-# Optional CLI tools that use external taps or are more likely to break.
+# Optional Apple-platform CLI tools.
 # Failures are reported but do not stop the full setup.
 
 [packages]
-# Apple platform tooling (taps xcodesorg/made)
-"brew:xcodesorg/made/xcodes" = "latest"
-
 # Xcode project management
 "brew-cask:tuist" = { greedy = true }
+
+[tools]
+# Use the published release without trusting a third-party Homebrew formula.
+"aqua:XcodesOrg/xcodes" = "latest"

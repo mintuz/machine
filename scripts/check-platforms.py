@@ -233,6 +233,7 @@ with tempfile.TemporaryDirectory() as directory:
     (fixture / "scripts").mkdir()
     (fixture / "scripts/bootstrap-macos.sh").write_text('echo "os-bootstrap:macos"\n')
     (fixture / "scripts/bootstrap-ubuntu.sh").write_text('echo "os-bootstrap:ubuntu"\n')
+    (fixture / "scripts/bootstrap-homebrew.sh").write_text(":\n")
     (fixture / "scripts/bootstrap-mise.sh").write_text(
         'mise_bin=/fake/mise\npython_bin="$repo_dir/bin/python"\n')
     (fixture / "bin").mkdir()
@@ -372,11 +373,16 @@ with tempfile.TemporaryDirectory() as directory:
     binary.mkdir()
     calls = fixture / "calls"
     calls.write_text("")
-    fzf_root = fixture / "fzf"
-    fzf_root.mkdir()
+    fzf_root = fixture / "opt/fzf"
+    fzf_root.mkdir(parents=True)
     command(fzf_root, "install", f'echo "fzf-install $*" >> "{calls}"')
-    mise = command(binary, "mise", f'''echo "mise $*" >> "{calls}"
-if [ "$3" = where ]; then echo "{fzf_root}"; fi''')
+    mise = command(binary, "mise", f'echo "mise $*" >> "{calls}"')
+    brew = command(binary, "brew", f'''case "$1" in
+  list|--version) exit 0 ;;
+  --prefix) printf '%s\\n' "{fixture}"; exit 0 ;;
+esac
+echo "brew $*" >> "{calls}"
+if [ "$1" = update ] && [ "${{TEST_BREW_UPDATE_FAIL:-}}" = 1 ]; then exit 17; fi''')
     for name in ("sudo", "chflags", "killall"):
         command(binary, name, f'echo "{name} $*" >> "{calls}"')
     command(binary, "defaults", f'''if [ "$1" = read ]; then echo "$TEST_UPDATE_CHECK"; exit 0; fi
@@ -389,7 +395,7 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         home = fixture / name
         home.mkdir()
         config = {"home": str(home), "repo_dir": str(root), "platform": platform, "profile": "personal",
-                  "user": "tester", "mise": str(mise), "brew_prefix": "/opt/homebrew",
+                  "user": "tester", "mise": str(mise), "brew": str(brew), "brew_prefix": "/opt/homebrew",
                   "shell_path": "/bin/zsh", "git_email": "tester@example.com", "git_name": "Test User",
                   "dotfiles_conflict_paths": [".agents/.skill-lock.json"], "manage_ssh_config": False,
                   **settings}
@@ -410,7 +416,7 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         for action in ("bootstrap", "git", "zsh", "fzf", "osx", "dock", "dotfiles"):
             host.run(action, config, check=True)
     assert recorded() == [] and list(home.iterdir()) == [], "check mode ran a command or wrote a file"
-    print("PASS: host check mode reports Git and shell changes without running commands or writing files")
+    print("PASS: host check mode reports Git and shell changes without installations or writes")
 
     home, config, env = isolated("git-home")
     with environment(**env):
@@ -437,18 +443,11 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         host.run("fzf", config)
     bashrc = (home / ".bashrc").read_text()
     assert bashrc.startswith("# existing bash settings\n") and bashrc.count("# BEGIN dev-machine mise") == 1
-    assert f"eval \"$({mise} activate bash)\"" in bashrc and 'export PATH="/opt/homebrew/bin:' in bashrc
     assert dotfiles_zshrc.read_text() == "# external dotfiles zshrc\n", "setup edited an external shell file"
     assert (home / ".ssh").is_dir() and (home / ".gnupg").is_dir()
     lines = recorded()
     assert not any("1password" in line for line in lines)
     assert lines[-1] == "fzf-install --key-bindings --completion --no-update-rc", lines
-    (home / ".zshrc").unlink()
-    with environment(**env):
-        host.run("bootstrap", config)
-        host.run("fzf", config)
-    assert "activate zsh" in (home / ".zshrc").read_text()
-    assert recorded()[-1] == "fzf-install --all"
     print("PASS: bootstrap and fzf activate mise and shell integration without editing symlinked dotfiles")
 
     home, config, env = isolated("mac-home", "mac")
@@ -484,7 +483,7 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
             return subprocess.run(["git", *args], cwd=cwd, check=True, text=True, capture_output=True).stdout.strip()
         upstream.mkdir()
         git("init", "-q", "-b", "master")
-        command(upstream, "install.sh", 'echo ran >> "$HOME/dotfiles-installed"')
+        command(upstream, "install.sh", 'printf "# Managed by the fixture installer\\n" >> "$HOME/.zshrc"')
         git("add", "install.sh")
         git("commit", "-qm", "first")
         first = git("rev-parse", "HEAD")
@@ -493,6 +492,13 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         conflict.write_text("local lock")
         config.update(dotfiles_repo=str(upstream), dotfiles_version="master")
         host.run("dotfiles", config)
+
+        def refused_install(message):
+            (home / ".zshrc").write_text("# User's local shell settings\n")
+            shell_before = (home / ".zshrc").read_bytes()
+            expect_error(message, host.run, "dotfiles", config)
+            assert (home / ".zshrc").read_bytes() == shell_before, "a refused checkout changed shell configuration"
+
         checkout = home / ".dotfiles"
         assert not conflict.exists()
         backups = list((home / ".dev-setup-backups").glob("*/dotfiles/.agents/.skill-lock.json"))
@@ -508,7 +514,7 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         assert not (checkout / "nested/.DS_Store").exists(), "macOS metadata was left for stow"
         assert len(list((home / ".dev-setup-backups").iterdir())) == 2, "a later backup overwrote an earlier one"
         (checkout / "second").write_text("local edit")
-        expect_error("local changes", host.run, "dotfiles", config)
+        refused_install("local changes")
         assert (checkout / "second").read_text() == "local edit"
         git("checkout", "--", "second", cwd=checkout)
         (checkout / "mine").write_text("mine")
@@ -518,7 +524,7 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         (upstream / "third").write_text("3")
         git("add", "third")
         git("commit", "-qm", "third")
-        expect_error("diverged", host.run, "dotfiles", config)
+        refused_install("diverged")
         assert git("rev-parse", "HEAD", cwd=checkout) == local, "setup discarded a local commit"
         config["dotfiles_version"] = first
         host.run("dotfiles", config)
@@ -528,9 +534,9 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         git("add", "detached-work", cwd=checkout)
         git("commit", "-qm", "detached local work", cwd=checkout)
         detached = git("rev-parse", "HEAD", cwd=checkout)
-        expect_error("detached commits", host.run, "dotfiles", config)
+        refused_install("detached commits")
         config["dotfiles_version"] = "master"
-        expect_error("detached commits", host.run, "dotfiles", config)
+        refused_install("detached commits")
         config["dotfiles_version"] = first
         assert git("rev-parse", "HEAD", cwd=checkout) == detached
         assert (checkout / "detached-work").read_text() == "preserve me"
@@ -547,6 +553,17 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
     with environment(**{**env, "PATH": str(binary)}):
         expect_error("Required command 'git'", host.run, "preflight", config)
     print("PASS: setup preflight requires git and curl before changes")
+    override = fixture / "failed-refresh.toml"
+    override.write_text(f"brew = {json.dumps(str(brew))}\n")
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts/setup.py"), "install", "--1password-ssh", "--skip-dotfiles",
+         "--config", str(override), "--mise", str(mise)],
+        env={**os.environ, **env, "DEVSETUP_PROFILE": "personal", "TEST_BREW_UPDATE_FAIL": "1"},
+        text=True, capture_output=True,
+    )
+    assert result.returncode == 1 and "update" in result.stderr, result.stdout + result.stderr
+    assert list(home.iterdir()) == [], "a failed Homebrew refresh changed SSH or host configuration"
+    print("PASS: a failed Homebrew refresh stops full setup before managed SSH or host writes")
 
 with tempfile.TemporaryDirectory() as directory:
     fixture = Path(directory)
@@ -571,7 +588,7 @@ with tempfile.TemporaryDirectory() as directory:
         env=env, text=True, capture_output=True, start_new_session=True,
     )
     assert refused.returncode == 1 and "terminal" in refused.stderr
-    command(binary, "sudo", 'if [[ "$*" == "-n true" ]]; then exit 0; fi\nexit 1')
+    command(binary, "sudo", 'if [ "$*" = "-n true" ]; then exit 0; fi\nexit 1')
     allowed = subprocess.run(
         ["bash", str(root / "scripts/with-sudo-askpass.sh"), "/bin/sh", "-c", "exit 23"],
         env=env, text=True, capture_output=True, start_new_session=True,

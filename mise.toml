@@ -22,7 +22,7 @@ run = "./install.sh"
 raw = true
 
 [tasks.bootstrap-only]
-description = "Install prerequisites, mise, and Python without configuring the machine"
+description = "Install prerequisites and shell activation without full setup"
 run = "./install.sh --bootstrap-only"
 raw = true
 

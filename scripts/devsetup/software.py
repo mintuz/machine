@@ -96,8 +96,8 @@ class _Shell:
         self.env = dict(os.environ)
         prefix = brew_prefix(config)
         paths = self.env.get("PATH", "").split(os.pathsep)
-        extra = [p for p in (f"{prefix}/bin", f"{prefix}/sbin") if p not in paths]
-        self.env["PATH"] = os.pathsep.join([*extra, *paths])
+        preferred = [str(Path(config["mise"]).parent), f"{prefix}/bin", f"{prefix}/sbin"]
+        self.env["PATH"] = os.pathsep.join(dict.fromkeys([*preferred, *paths]))
 
     def run(self, argv, *, env=None, cwd="/", input=None):
         print("$ " + shlex.join(str(part) for part in argv), flush=True)
@@ -462,21 +462,25 @@ def _transfer_npm_globals(config, shell, previous_bin, active_bin):
     then Homebrew node. The first source with a package decides its version,
     and that exact version is installed. Packages already in the active runtime
     are left alone, and nothing is removed from the earlier runtimes.
+    Legacy providers are read only before the machine fragment takes ownership
+    of Node. Later runs must not restore packages that the user uninstalled.
     Returns the package specs that failed to install.
     """
     active_root = _npm_root(shell, active_bin)
     if not active_root:
         raise RuntimeError("Could not find the global npm directory of the mise Node runtime.")
     sources = []
+    nvm_others = []
     if previous_bin and Path(previous_bin).resolve() != Path(active_bin).resolve():
         root = _npm_root(shell, previous_bin)
         if root:
             sources.append((f"previous mise Node {Path(previous_bin).parent.name}", root))
-    nvm_bin, nvm_label, nvm_others = _nvm_default(config)
-    if nvm_bin:
-        sources.append((nvm_label, nvm_bin.parent / "lib/node_modules"))
-    if (brew_prefix(config) / "Cellar/node").is_dir():
-        sources.append(("Homebrew node", brew_prefix(config) / "lib/node_modules"))
+    if "node" not in _fragment_tools(config):
+        nvm_bin, nvm_label, nvm_others = _nvm_default(config)
+        if nvm_bin:
+            sources.append((nvm_label, nvm_bin.parent / "lib/node_modules"))
+        if (brew_prefix(config) / "Cellar/node").is_dir():
+            sources.append(("Homebrew node", brew_prefix(config) / "lib/node_modules"))
     current = _npm_globals(active_root)
     chosen = {}
     for label, root in sources:
@@ -505,11 +509,11 @@ def _transfer_npm_globals(config, shell, previous_bin, active_bin):
     return failures
 
 
-def _switch_node(config, shell, spec, previous_bin):
-    """Prove the mise Node and move npm globals to it before retiring Homebrew node.
+def _prepare_node(config, shell, spec, previous_bin):
+    """Prove the mise Node and move npm globals before committing its configuration.
 
     Raises RuntimeError when the runtime does not run or a package fails to
-    move; earlier runtimes and Homebrew node are then left in place.
+    move. The caller must record the working default before retiring Homebrew.
     """
     if shell.check:
         print("Moving npm globals to the mise Node runtime: not previewed.", flush=True)
@@ -522,11 +526,10 @@ def _switch_node(config, shell, spec, previous_bin):
     if failures:
         raise RuntimeError(f"npm global packages failed to move to the mise Node runtime: {', '.join(failures)}. "
                            "Earlier Node runtimes and Homebrew node were left in place.")
-    _retire_brew_node(config, shell)
 
 
 def _retire_brew_node(config, shell):
-    """Unlink Homebrew's node once the mise runtime works and has the npm globals."""
+    """Unlink Homebrew's node after its working replacement and globals are configured."""
     brew = _brew(config)
     if not brew or not (brew_prefix(config) / "var/homebrew/linked/node").exists():
         return
@@ -579,8 +582,10 @@ def _cli(config, shell):
         if _install_tools(config, shell, tools) != 0:
             raise RuntimeError("Required mise tools failed to install. See the mise output above.")
         if node:
-            _switch_node(config, shell, node.spec, previous)
+            _prepare_node(config, shell, node.spec, previous)
         record_tools(config, shell, {entry.key: entry.version for entry in tools})
+        if node:
+            _retire_brew_node(config, shell)
     failures = []
     for entry in optional:
         failed = (_install_tools(config, shell, [entry]) != 0 if entry.is_tool
@@ -641,8 +646,9 @@ def _node(config, shell):
     previous = _previous_mise_node(config, shell, node.spec)
     if _install_tools(config, shell, [node, pnpm]) != 0:
         raise RuntimeError("Installing Node and pnpm with mise failed.")
-    _switch_node(config, shell, node.spec, previous)
+    _prepare_node(config, shell, node.spec, previous)
     record_tools(config, shell, {node.key: node.version, pnpm.key: pnpm.version})
+    _retire_brew_node(config, shell)
     _write_shell_block(config, shell)
     pnpm_home = Path(config["pnpm_home"])
     if not shell.check:
@@ -717,7 +723,8 @@ def _update(config, shell):
         component("mise tools", status(shell.run([_mise(config), "upgrade", "--no-prune", *tools])))
         if node_spec:
             try:
-                _switch_node(config, shell, node_spec, previous)
+                _prepare_node(config, shell, node_spec, previous)
+                _retire_brew_node(config, shell)
                 component("npm global transfer", status(0))
             except RuntimeError as error:
                 print(error, flush=True)

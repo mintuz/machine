@@ -6,7 +6,7 @@ git_email = "github@mintuz.com"
 git_name = "Adam Bulmer"
 
 dotfiles_repo = "https://github.com/mintuz/.dotfiles.git"
-dotfiles_version = "master"
+dotfiles_version = "01fe6340f41bea696e168196150a262dc499061c"
 dotfiles_conflict_paths = [".agents/.skill-lock.json"]
 
 personal_public_ssh_key = "personal_github.pub"
