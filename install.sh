@@ -118,9 +118,10 @@ if [[ "$platform" == macos && "$profile" != --bootstrap-only ]]; then
   fi
 fi
 
-# OS prerequisites, then the checksummed mise release and the locked Python.
-# bootstrap-mise.sh sets mise_bin and python_bin.
+# OS prerequisites, Homebrew, then the checksummed mise release and the locked
+# Python. bootstrap-mise.sh sets mise_bin and python_bin.
 source "$repo_dir/scripts/bootstrap-$platform.sh"
+source "$repo_dir/scripts/bootstrap-homebrew.sh"
 source "$repo_dir/scripts/bootstrap-mise.sh"
 
 if [[ "$use_1password" == true ]]; then ssh_flag=--1password-ssh; else ssh_flag=--keep-ssh; fi

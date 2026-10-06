@@ -3,7 +3,7 @@
 Every command is an argument array. Failures raise RuntimeError with the failed
 command; Dock entries are best effort, as before. Privileged steps use one
 ``sudo`` call each (``sudo -A`` when the askpass wrapper exported SUDO_ASKPASS).
-Homebrew formulae come from native ``mise bootstrap packages``, never the brew CLI.
+Homebrew formulae and casks are installed with Homebrew itself (``config["brew"]``).
 """
 from __future__ import annotations
 
@@ -144,15 +144,22 @@ def _sudo(*argv) -> list:
     return ["sudo", "-A", *argv] if os.environ.get("SUDO_ASKPASS") else ["sudo", *argv]
 
 
-def _mise(config: dict, *args, capture: bool = False) -> subprocess.CompletedProcess:
-    return _run([config["mise"], *args], capture=capture, cwd=config["repo_dir"])
+def _brew(config: dict, *args, capture: bool = False) -> subprocess.CompletedProcess:
+    return _run([config["brew"], *args], capture=capture)
+
+
+def _brew_has(config: dict, kind: str, name: str) -> bool:
+    """True when ``brew list --formula|--cask NAME`` finds an installed package."""
+    return subprocess.run([config["brew"], "list", kind, name], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
 
 
 def _formula(config: dict, name: str, *, latest: bool = False) -> None:
-    """Install a homebrew/core formula with native mise packages (no brew CLI)."""
-    _mise(config, "bootstrap", "packages", "apply", "--yes", f"brew:{name}")
-    if latest:
-        _mise(config, "bootstrap", "packages", "upgrade", "--yes", f"brew:{name}")
+    """Install a Homebrew formula if missing; with ``latest`` also upgrade an installed one."""
+    if not _brew_has(config, "--formula", name):
+        _brew(config, "install", "--formula", name)
+    elif latest:
+        _brew(config, "upgrade", "--formula", name)
 
 
 def _timestamp() -> str:
@@ -225,10 +232,13 @@ def _shell_files(config: dict) -> list[str]:
 # Actions -------------------------------------------------------------------
 
 def preflight(config: dict) -> None:
-    """Require git and curl, stop above 90% disk use, and warn above 80%."""
+    """Require brew, git and curl, stop above 90% disk use, and warn above 80%."""
     for command in ("git", "curl"):
         if shutil.which(command) is None:
             raise RuntimeError(f"Required command '{command}' is missing. Complete bootstrap first.")
+    if not os.access(config["brew"], os.X_OK):
+        raise RuntimeError(f"Homebrew is missing at {config['brew']}. Run ./install.sh --bootstrap-only first.")
+    _brew(config, "--version", capture=True)
     usage = shutil.disk_usage("/")
     percent = -(-usage.used * 100 // (usage.used + usage.free))
     if percent > 90:
@@ -243,27 +253,25 @@ def bootstrap(config: dict, check: bool = False) -> None:
     if not check:
         for folder in (".ssh", ".gnupg"):
             (home / folder).mkdir(exist_ok=True)
-    prefix = config["brew_prefix"]
     for name in _shell_files(config):
         shell = "zsh" if name == ".zshrc" else "bash"
         ensure_block(home / name, "dev-machine mise", [
-            f'export PATH="{prefix}/bin:{prefix}/sbin:$PATH"',
+            f'eval "$({shlex.quote(config["brew"])} shellenv)"',
             f'eval "$({shlex.quote(config["mise"])} activate {shell})"',
         ], check=check)
     if config["platform"] == "mac" and config["manage_ssh_config"]:
-        installed = (Path("/Applications/1Password.app").exists()
-                     or Path(prefix, "Caskroom", "1password").exists())
+        installed = Path("/Applications/1Password.app").exists() or _brew_has(config, "--cask", "1password")
         if not installed and check:
-            print("1Password: would install the desktop app (brew-cask:1password).")
+            print("1Password: would install the desktop app (brew install --cask 1password).")
         elif not installed:
-            _mise(config, "bootstrap", "packages", "apply", "--yes", "brew-cask:1password")
+            _brew(config, "install", "--cask", "1password")
         print("Open 1Password, sign in, and enable its SSH agent before using Git over SSH.")
 
 
 def git(config: dict, check: bool = False) -> None:
     """Install the latest Git and set the global identity, ignore file, and defaults."""
     if check:
-        print("Git: would install or upgrade brew:git.")
+        print("Git: would install or upgrade the Homebrew git formula.")
     else:
         _formula(config, "git", latest=True)
     target = Path(config["home"], ".global_gitignore")
@@ -368,7 +376,7 @@ def zsh(config: dict) -> None:
 
 def fzf(config: dict) -> None:
     """Install fzf key bindings and completion; never edit symlinked shell files."""
-    root = _mise(config, "bootstrap", "packages", "where", "brew:fzf", capture=True).stdout.strip()
+    root = Path(_brew(config, "--prefix", capture=True).stdout.strip(), "opt", "fzf")
     home = Path(config["home"])
     if any(_is_external(home / name) for name in (".bashrc", ".zshrc")):
         print("fzf: shell files are externally managed; they must source ~/.fzf.zsh or ~/.fzf.bash.")

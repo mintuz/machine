@@ -24,7 +24,7 @@ STRING_KEYS = ("git_email", "git_name", "dotfiles_repo", "dotfiles_version",
 LIST_KEYS = ("dotfiles_conflict_paths", "remote_login_public_keys", "remote_login_sources",
              "pnpm_global_packages")
 MAC_PATH_KEYS = ("remote_login_sshd_file", "tailscale_cli")
-PATH_KEYS = ("shell_path", "pnpm_home", "brew_prefix") + MAC_PATH_KEYS
+PATH_KEYS = ("shell_path", "pnpm_home", "brew_prefix", "brew") + MAC_PATH_KEYS
 # Detected per run; a settings file cannot replace them.
 DETECTED_KEYS = ("home", "repo_dir", "platform", "user", "mise")
 # These substitutions belong to isolated direct module tests, not user settings.
@@ -173,6 +173,10 @@ def load(*, repo_dir: Path, profile: str | None = None, overrides: Sequence[Path
                   user=user or account.pw_name,
                   profile=_select_profile(profile, environ, file_profiles))
     _validate(config)
+    # Homebrew owns native formulae and casks; its executable defaults to the prefix.
+    brew = config.setdefault("brew", f"{config['brew_prefix']}/bin/brew")
+    if not isinstance(brew, str) or not brew:
+        raise ConfigError("Setting 'brew' must be a non-empty string.")
 
     for key in PATH_KEYS:
         if key in config:
