@@ -40,15 +40,26 @@ See `README.md` for user-facing setup instructions and validation history.
 - `make packages PROFILE=work` previews selected inventories without writes.
 - `make check` runs shell syntax, package-selection checks, Brewfile parsing,
   safety regressions, and Ansible syntax checks without installing packages.
+- `make remote-login-check` runs only the shared Remote Login prerequisites
+  in Ansible check mode, without sudo. It checks keys, Tailscale, and Homebrew;
+  it does not deploy configuration, validate effective SSH settings, or
+  change services or keys. It can run from a remote session.
 - `make remote-login` turns on Remote Login (SSH) for tailnet key logins on
   macOS. It passes `manage_remote_login=true`; the Mac default is false, and
-  full setup does not prompt for it.
+  full setup does not prompt for it. Its command wrapper runs the read-only
+  preflight before requesting sudo.
 - `make remote-login-revoke` is a separate Mac-only opt-in. It passes
   `revoke_remote_login=true` with the `remote-login-revoke` tag; the default
   is false. It disables SSH startup/listener and backs up then clears the
   invoking user's `authorized_keys`, without requiring Homebrew, Tailscale,
-  or phone keys. Neither remote-login target changes Shields Up.
+  or phone keys. None of the Remote Login commands changes Shields Up.
   If both flags are true, skip enablement and run revocation.
+  `scripts/remote-login.sh` rejects non-macOS, root, invalid profiles, and
+  missing Ansible before requesting sudo. Enablement and revocation refuse
+  detected SSH sessions (`SSH_CONNECTION`, `SSH_CLIENT`, or `SSH_TTY`).
+  The Ansible tasks also enforce this session check outside check mode.
+  These environment checks are an operator guard, not proof of local-console
+  use. Do not bypass them by clearing variables.
 
 The SSH prompt defaults to No. Without a terminal, preserve SSH unless
 `--1password-ssh` is explicit. Pass the selection as `manage_ssh_config` to

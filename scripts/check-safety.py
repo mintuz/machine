@@ -149,6 +149,27 @@ fi''')
     assert not remote_calls.exists() and not any((remote_home / ".ssh").iterdir())
     print("PASS: Remote Login runs only when requested on macOS, and stops before changes without phone keys")
 
+    # Exercise the real preflight tasks from an SSH session in an isolated home.
+    subprocess.run(["/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "",
+                    "-f", str(fixture / ".ssh/phone")], check=True)
+    preflight_keys = remote_home / ".ssh/authorized_keys"
+    preflight_keys.write_text("existing access must survive preflight\n")
+    play = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
+             "vars": {"ansible_facts": dict(mac, env=dict(mac["env"], SSH_CONNECTION="remote-session")),
+                      "ansible_become": False, "remote_login_public_keys": ["phone.pub"],
+                      "remote_login_sources": ["100.64.0.0/10"],
+                      "tailscale_cli": str(binary / "tailscale")},
+             "tasks": [{"ansible.builtin.import_tasks": str(root / "ansible/tasks/mac/remote-login.yaml")}]}]
+    path.write_text(json.dumps(play))
+    result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path),
+                             "--check", "--tags", "remote-login-preflight"],
+                            env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert preflight_keys.read_text() == "existing access must survive preflight\n"
+    assert not (remote_home / ".dev-setup-backups").exists()
+    assert "changed=0" in result.stdout, result.stdout + result.stderr
+    print("PASS: Remote Login preflight checks valid keys remotely without replacing existing access")
+
     # Exercise revocation through the real entry point without host services.
     remote_running = fixture / "remote-running"
     remote_disabled = fixture / "remote-disabled"
@@ -184,6 +205,22 @@ esac''')
     revoke_vars = {"ansible_facts": mac, "ansible_become": False, "revoke_remote_login": True,
                    "remote_login_public_keys": [], "remote_login_launchctl": str(binary / "launchctl"),
                    "tailscale_cli": str(binary / "tailscale")}
+    # A detected remote session must fail before shutdown or key replacement.
+    for tag, opt_in in (("remote-login", "manage_remote_login"),
+                        ("remote-login-revoke", "revoke_remote_login")):
+        for variable in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
+            remote_facts = dict(mac, env=dict(mac["env"], **{variable: "remote-session"}))
+            request_vars = dict(revoke_vars, ansible_facts=remote_facts, revoke_remote_login=False)
+            request_vars[opt_in] = True
+            result = subprocess.run(
+                ["ansible-playbook", str(root / "local.yaml"), "--tags", tag, "-e",
+                 json.dumps(request_vars)],
+                env=remote_env, text=True, capture_output=True)
+            assert result.returncode != 0 and "local console" in result.stdout, result.stdout + result.stderr
+            assert authorized_keys.read_text() == old_phone_key and remote_running.exists()
+            assert not remote_disabled.exists() and not remote_service_calls.exists()
+    print("PASS: detected SSH sessions cannot enable or revoke access through direct Ansible runs")
+
     for facts, opted_in, check_mode in ((linux, True, False), (mac, False, False), (mac, True, True)):
         args = ["ansible-playbook", str(root / "local.yaml"), "--tags", "remote-login-revoke", "-e",
                 json.dumps(dict(revoke_vars, ansible_facts=facts, revoke_remote_login=opted_in))]

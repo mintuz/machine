@@ -13,7 +13,7 @@
       tags: [never, packages]
 
     - import_tasks: ansible/tasks/validation.yaml
-      when: "ansible_run_tags | difference(['packages', 'remote-login-revoke']) | length > 0"
+      when: "ansible_run_tags | difference(['packages', 'remote-login', 'remote-login-preflight', 'remote-login-revoke']) | length > 0"
       tags:
         - always
 

@@ -90,8 +90,9 @@ available and removes its temporary password helper when the command exits.
 | `make git PROFILE=work` | Configure Git using the configured name and email |
 | `make node` | Install nvm-managed Node LTS and configure pnpm |
 | `make dotfiles` | Install or refresh the external dotfiles on either OS |
-| `make remote-login` | Configure and enable SSH key logins on macOS; requires phone keys and the [remote access prerequisites](#before-you-start) |
-| `make remote-login-revoke` | Disable macOS SSH startup/listener and back up then clear your `authorized_keys`; existing sessions need separate action |
+| `make remote-login-check` | Check macOS Remote Login prerequisites read-only, without sudo; does not validate effective SSH settings or network isolation |
+| `make remote-login` | Configure and enable macOS SSH key logins from the local console; first complete the [remote access prerequisites](#before-you-start) |
+| `make remote-login-revoke` | From the local console, disable macOS SSH startup/listener and back up then clear your `authorized_keys`; existing sessions need separate action |
 | `make update` | Update installed Homebrew packages, CLI casks, and runtime tools; App Store only on Mac |
 | `make check` | Check routing, safety regressions, Brewfile parsing, shell syntax, and Ansible syntax |
 
@@ -177,7 +178,7 @@ Shared preferences live in `defaults.yaml`. OS defaults live in
   key files in `.ssh/` and must not be empty when enabling access.
   `remote_login_sources` limits the source addresses accepted for SSH logins;
   it does not bind the listener to those interfaces. `tailscale_cli` is the
-  path of the Tailscale command-line tool. Neither remote-login command
+  path of the Tailscale command-line tool. None of the Remote Login commands
   changes Shields Up. `make remote-login-revoke` sets the separate,
   default-false `revoke_remote_login` flag for one run. It needs neither
   phone keys nor Homebrew nor a Tailscale connection.
@@ -206,7 +207,20 @@ It works on macOS only, and only when you opt in. The key-only and
 source-address limits apply to normal SSH **after FileVault unlocks**, not
 to every boot state or every service on the Mac.
 
+Start with [prerequisites](#before-you-start) and
+[network restrictions](#restrict-network-access-before-setup), then
+[set up the Mac](#set-up-the-mac) and [iPhone](#set-up-the-iphone).
+For existing access: [change keys](#add-or-remove-phone-keys),
+[revoke access](#turn-off-remote-access),
+[handle a lost phone](#if-the-iphone-is-lost-or-compromised), or
+[troubleshoot](#remote-login-troubleshooting).
+
 ### Before you start
+
+Use your normal macOS account, not root. The commands require Ansible
+and the repository's Ansible collections; complete bootstrap first if
+needed. Enablement and its read-only preflight also require Homebrew,
+connected Tailscale, and phone public keys. Revocation does not.
 
 Read these limits before enabling Remote Login:
 
@@ -221,13 +235,17 @@ Read these limits before enabling Remote Login:
   network exposure. **Tailscale Shields Up is not LAN protection.** Configure
   and verify a local firewall before enabling Remote Login. Do not assume
   a post-unlock application firewall protects FileVault's pre-unlock SSH.
-- Run setup, key changes, and revocation from a local console, not the SSH
-  connection you are changing. Setup disables and unloads Remote Login
-  before replacing its live configuration. Existing sessions may be
-  interrupted; stopping the listener does not reliably end all SSH or mosh
-  sessions.
+- Run enablement, key changes, and revocation from a local console, not
+  SSH or mosh. The commands refuse environments with `SSH_CONNECTION`,
+  `SSH_CLIENT`, or `SSH_TTY` set; do not unset these to bypass the check.
+  A reused terminal session can retain or omit these variables; the guard
+  cannot prove local-console use. Start a fresh local terminal on the Mac.
+  Setup disables and unloads Remote Login before replacing its live
+  configuration. Existing sessions may be interrupted; stopping the
+  listener does not reliably end all SSH or mosh sessions.
+  The read-only `make remote-login-check` does not require a local console.
 - Keep Shields Up on until setup and the policy checks below succeed.
-  Neither `make remote-login` nor `make remote-login-revoke` changes it.
+  None of the Remote Login commands changes it.
   Releasing it permits inbound traffic to any service allowed by the full
   tailnet policy, including development servers if broad rules remain.
 
@@ -280,45 +298,14 @@ limits. Verify the rules for both IPv4 and IPv6. The command does not
 configure the firewall. A firewall rule allowing SSH is not a substitute
 for reviewing other exposed services.
 
-### What setup changes
-
-`make remote-login` performs these steps and stops on failure:
-
-1. Checks that the phone key list is nonempty, each file holds one public
-   key line without options, and Tailscale is connected.
-2. Creates SSH host keys if needed.
-3. Disables SSH startup and unloads its listener if loaded. Rejects a symlink
-   or non-regular file at `/etc/ssh/sshd_config.d/010-remote-login.conf` and
-   saves the previous regular file's content, owner, group, and mode, if
-   present.
-4. Installs the managed configuration. This limits normal post-unlock SSH
-   to key logins for your account from `remote_login_sources`, with keys only in
-   `~/.ssh/authorized_keys`. It also sets the SSH command `PATH` so mosh and
-   herdr can be found.
-5. Validates the configuration and effective SSH settings. If deployment
-   or this gate fails, restores the previous configuration, or removes the
-   new file if none existed, and leaves Remote Login disabled. The original
-   failure is reported.
-6. Only after the gate succeeds, backs up and replaces
-   `~/.ssh/authorized_keys` with the listed phone keys, and sets the Remote
-   Login access list to your account only.
-7. Enables Remote Login and checks the SSH port. An activation or port-check
-   failure disables startup and unloads the listener again.
-8. Shows connection details and SSH host key fingerprints, and warns if
-   `mosh-server` or `herdr` is not on the SSH `PATH`.
-
-If any step fails, fix the reported cause and rerun from the local console.
-Do not enable Remote Login manually in System Settings or with `launchctl`
-to bypass a failed run.
-
 ### Set up the Mac
 
 1. Complete the network policy and local firewall checks above. Leave
    Shields Up on.
-2. In Secure ShellFish, create a key on the Secure Enclave. The private key
-   cannot leave the iPhone.
-3. In Moshi, create an Ed25519 key. Turn on **Biometric for keys**. Keep
-   credential sync off.
+2. For Secure ShellFish, create a key on the iPhone's Secure Enclave.
+   The private key cannot leave the iPhone.
+3. For Moshi, create an Ed25519 key. Turn on **Biometric for keys** and
+   keep credential sync off. Only create keys for the apps you will use.
 4. Copy each public key into `.ssh/` in this repository. For example, copy
    the public key on the iPhone, then run this command on the Mac. This needs
    Universal Clipboard.
@@ -327,7 +314,7 @@ to bypass a failed run.
    pbpaste > .ssh/iphone-shellfish.pub
    ```
 
-5. List the key files in `defaults.yaml`:
+5. List only those key files in `defaults.yaml`:
 
    ```yaml
    remote_login_public_keys:
@@ -340,18 +327,32 @@ to bypass a failed run.
    if only that device should log in. If its addresses change, update the
    list at the Mac. This authentication limit does not replace the policy
    or firewall checks.
-6. Optional: run the limited check mode. It can ask for your password and
-   does not change the Mac. It skips configuration deployment, the effective
-   SSH settings gate, and activation; it is not a full configuration preview
-   or proof that enabling access will work:
+6. Run the read-only prerequisite check as your normal user:
 
    ```bash
-   scripts/with-sudo-askpass.sh ansible-playbook local.yaml --tags remote-login -e manage_remote_login=true --check --diff
+   make remote-login-check
    ```
 
-7. At the local console, run `make remote-login`. Enter your password when
-   it asks. Keep the connection details and fingerprints it shows.
-8. Only after setup succeeds and the full policy and firewall checks pass,
+   This checks phone keys, Tailscale, and Homebrew without sudo or changes
+   to services, configuration, or keys. It uses limited Ansible check mode:
+   configuration deployment, the effective SSH settings gate, and activation
+   are skipped. A pass is **not** a full SSH configuration preview, proof
+   that enablement will succeed, or verification of policy or firewall rules.
+7. Before enabling, review the key list: each run backs up and **replaces
+   all of `~/.ssh/authorized_keys`** with these keys. Hand-added keys and
+   Moshi Easy Pair keys not in the list will be removed. Setup also limits
+   Remote Login to your account. Existing SSH or mosh sessions may be
+   interrupted, but are not reliably terminated.
+   At the Mac's local console, run:
+
+   ```bash
+   make remote-login
+   ```
+
+   Enter your sudo password if asked. Keep the connection details and
+   host key fingerprints. If the run fails, do not enable Remote Login
+   manually; fix the reported cause and rerun locally.
+8. Only after enablement succeeds and the full policy and firewall checks pass,
    explicitly allow inbound tailnet traffic:
 
    ```bash
@@ -401,10 +402,11 @@ Work inside herdr keeps running on the Mac when the phone disconnects.
 For changes that leave at least one trusted key:
 
 1. Add or remove filenames in `remote_login_public_keys`.
-2. Run `make remote-login` from the local console; this interrupts the
-   listener while it rechecks the configuration.
+2. Run `make remote-login-check` to check the revised inputs, then
+   `make remote-login` from the local console. Enablement interrupts the
+   listener while it rechecks the effective SSH configuration.
 
-Each run replaces `~/.ssh/authorized_keys` with the listed keys. Keys added
+Each enable run replaces `~/.ssh/authorized_keys` with the listed keys. Keys added
 by hand or by Moshi's Easy Pair are removed. Before each change to a nonempty
 file, it is backed up under
 `~/.dev-setup-backups/<timestamp>/remote-login-<previous-content-hash>/authorized_keys`.
@@ -482,6 +484,25 @@ sessions.** Use the incident steps below if an active session is untrusted.
    rules, and a successful `make remote-login` run; then release Shields Up
    manually as in setup.
 
+### Remote Login troubleshooting
+
+- **Wrong platform, root, or missing Ansible:** use a normal macOS account
+  and complete bootstrap. Do not run the Make commands with `sudo`; enable
+  and revoke request it when needed.
+- **Local-console refusal:** move to a local terminal on the Mac. Do not
+  bypass the SSH environment check. Read-only preflight can run remotely.
+- **Preflight fails:** correct the reported phone-key, Homebrew, or Tailscale
+  prerequisite, then rerun `make remote-login-check`. Each key file must
+  contain one public key line, without authorised-key options.
+- **Enablement fails after preflight passed:** preflight does not run the
+  effective SSH settings gate. Review the error and the
+  [security limits](#security-limits), fix the cause, and rerun locally.
+  Do not bypass the gate by enabling SSH manually.
+- **The phone cannot connect:** check Tailscale on both devices, the selected
+  key and account, and the reviewed policy/firewall rules. Do not widen
+  rules merely to get a connection. A host fingerprint mismatch must be
+  investigated before connecting.
+
 ### Security limits
 
 - The SSH server configuration can contain no `Match` block except the one
@@ -496,6 +517,37 @@ sessions.** Use the incident steps below if an active session is untrusted.
 - If `~/.ssh/config` sends SSH to the 1Password agent, outgoing SSH from an
   iPhone session, for example `git push`, waits for approval on the Mac
   screen.
+
+### What setup changes
+
+`make remote-login` performs these steps and stops on failure:
+
+1. Checks Homebrew, that the phone key list is nonempty, that each file holds
+   one public key line without options, and that Tailscale is connected.
+2. Creates SSH host keys if needed.
+3. Disables SSH startup and unloads its listener if loaded. Rejects a symlink
+   or non-regular file at `/etc/ssh/sshd_config.d/010-remote-login.conf` and
+   saves the previous regular file's content, owner, group, and mode, if
+   present.
+4. Installs the managed configuration. This limits normal post-unlock SSH
+   to key logins for your account from `remote_login_sources`, with keys only in
+   `~/.ssh/authorized_keys`. It also sets the SSH command `PATH` so mosh and
+   herdr can be found.
+5. Validates the configuration and effective SSH settings. If deployment
+   or this gate fails, restores the previous configuration, or removes the
+   new file if none existed, and leaves Remote Login disabled. The original
+   failure is reported.
+6. Only after the gate succeeds, backs up and replaces
+   `~/.ssh/authorized_keys` with the listed phone keys, and sets the Remote
+   Login access list to your account only.
+7. Enables Remote Login and checks the SSH port. An activation or port-check
+   failure disables startup and unloads the listener again.
+8. Shows connection details and SSH host key fingerprints, and warns if
+   `mosh-server` or `herdr` is not on the SSH `PATH`.
+
+If any step fails, fix the reported cause and rerun from the local console.
+Do not enable Remote Login manually in System Settings or with `launchctl`
+to bypass a failed run.
 
 ## Implementation and validation
 
@@ -571,6 +623,12 @@ Security-review follow-up validation on 2026-10-06:
 - The production activation block recovered from a simulated partial
   `bootstrap` failure. It reported failure and confirmed that the service
   model was disabled and unloaded.
+- The operator-workflow checks passed: valid-key preflight preserved existing
+  access in a temporary home, and direct Ansible enable/revoke runs refused
+  detected SSH sessions before touching service state or keys.
+- Command smoke checks confirmed local-console refusals, non-Mac rejection,
+  and an actionable empty-key preflight failure without sudo. No host
+  activation or revocation was performed.
 - These checks did not call real privileged `launchctl` operations or
   establish firewall, tailnet, FileVault boot, or iPhone behaviour.
 

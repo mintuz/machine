@@ -9,6 +9,20 @@
     quiet: true
   tags: [remote-login-revoke]
 
+- name: Require the local console before revoking Remote Login
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['env'].get('SSH_CONNECTION', '') == ''
+      - ansible_facts['env'].get('SSH_CLIENT', '') == ''
+      - ansible_facts['env'].get('SSH_TTY', '') == ''
+    fail_msg: >-
+      Run make remote-login-revoke from the Mac's local console, not SSH or mosh.
+      Revocation stops the SSH listener and can interrupt your session.
+      Do not unset SSH environment variables to bypass this check.
+    quiet: true
+  when: not ansible_check_mode
+  tags: [remote-login-revoke]
+
 - name: Stop Remote Login before revoking keys
   ansible.builtin.import_tasks: remote-login-stop.yaml
   tags: [remote-login-revoke]
