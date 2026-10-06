@@ -149,16 +149,16 @@ class Recorder:
 
         class Module:
             @staticmethod
-            def run(action, config, **kwargs):
-                recorder.calls.append(f"{name}:{action}")
+            def run(action, config, *, check=False):
+                recorder.calls.append(f"{name}:{action}" + (" (check)" if check else ""))
         return Module
 
 
-def route(action, platform="mac", **flags):
+def route(action, platform="mac", check=False, **flags):
     config = {"platform": platform, "manage_ssh_config": False, "install_dotfiles": True,
               "manage_remote_login": False, "revoke_remote_login": False, **flags}
     recorder = Recorder()
-    cli.dispatch(action, config, recorder)
+    cli.dispatch(action, config, recorder, check=check)
     return recorder.calls
 
 
@@ -205,6 +205,10 @@ for argv in (["dotfiles", "--skip-dotfiles"], ["install", "--keep-ssh", "--1pass
             assert exit_status.code == 2
         else:
             raise AssertionError(f"{argv} was accepted")
+checked = route("install", check=True, manage_ssh_config=True, manage_remote_login=True)
+assert checked == [call + " (check)" for call in route("install", manage_ssh_config=True, manage_remote_login=True)]
+assert route("remote-login", check=True) == ["security:remote-login (check)"]
+assert cli.parse_args(["remote-login", "--check"]).check and not cli.parse_args(["remote-login"]).check
 print("PASS: direct commands route to one component, opt in to their own action, and reject conflicting options")
 
 
@@ -395,6 +399,14 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         lines = calls.read_text().splitlines()
         calls.write_text("")
         return lines
+
+    home, config, env = isolated("check-home", "mac", manage_ssh_config=True, dotfiles_repo=str(fixture / "none"),
+                                 dotfiles_version="master")
+    with environment(**env, TEST_UPDATE_CHECK="0"):
+        for action in ("bootstrap", "git", "zsh", "fzf", "osx", "dock", "dotfiles"):
+            host.run(action, config, check=True)
+    assert recorded() == [] and list(home.iterdir()) == [], "check mode ran a command or wrote a file"
+    print("PASS: host check mode reports Git and shell changes without running commands or writing files")
 
     home, config, env = isolated("git-home")
     with environment(**env):

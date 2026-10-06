@@ -1,7 +1,8 @@
 """Command-line entry point: load the config once, then route each action to its module.
 
 Modules are imported only when an action needs them and share one interface:
-``run(action, config)``. Software and security also accept ``check=``.
+``run(action, config, *, check=False)``. With ``--check`` every step is asked
+to report instead of change; it is a limited preview, not a full simulation.
 """
 from __future__ import annotations
 
@@ -55,55 +56,56 @@ class _Modules:
         return importlib.import_module(f"devsetup.{name}")
 
 
-def dispatch(action: str, config: dict, modules) -> None:
+def dispatch(action: str, config: dict, modules, *, check: bool = False) -> None:
     """Run one action. ``modules`` provides host, software, and security objects."""
-    host, mac = modules.host, config["platform"] == "mac"
-    if action in MAC_ONLY and not mac:
+    def step(module: str, name: str) -> None:
+        getattr(modules, module).run(name, config, check=check)
+
+    if action in MAC_ONLY and config["platform"] != "mac":
         print(f"{action}: skipped; it applies to macOS only.")
         return
     if action in PREFLIGHT:
-        host.run("preflight", config)
+        step("host", "preflight")
     if action == "install":
-        _install(config, modules)
+        _install(config, step)
     elif action == "bootstrap":
-        host.run("bootstrap", config)
+        step("host", "bootstrap")
     elif action == "cli":
-        modules.software.run("cli", config)
-        host.run("fzf", config)
+        step("software", "cli")
+        step("host", "fzf")
     elif action in SOFTWARE:
-        modules.software.run(action, config)
+        step("software", action)
     elif action in HOST:
-        host.run(action, config)
+        step("host", action)
     elif action in SECURITY:
-        modules.security.run(action, config)
+        step("security", action)
     else:
         raise ValueError(f"Unknown action {action!r}")
 
 
-def _install(config: dict, modules) -> None:
+def _install(config: dict, step) -> None:
     """Full configuration in the order of the old setup playbook."""
-    host, software, security = modules.host, modules.software, modules.security
     mac = config["platform"] == "mac"
     if config["manage_ssh_config"]:
-        security.run("ssh", config)
-    host.run("git", config)
-    software.run("cli", config)
-    host.run("fzf", config)
+        step("security", "ssh")
+    step("host", "git")
+    step("software", "cli")
+    step("host", "fzf")
     if mac and config["revoke_remote_login"]:
-        security.run("remote-login-revoke", config)
+        step("security", "remote-login-revoke")
     elif mac and config["manage_remote_login"]:
-        security.run("remote-login", config)
+        step("security", "remote-login")
     if mac:
-        software.run("gui", config)
-    host.run("zsh", config)
+        step("software", "gui")
+    step("host", "zsh")
     if mac:
-        software.run("app-store", config)
-        host.run("osx", config)
-    software.run("node", config)
+        step("software", "app-store")
+        step("host", "osx")
+    step("software", "node")
     if config["install_dotfiles"]:
-        host.run("dotfiles", config)
+        step("host", "dotfiles")
     if mac:
-        host.run("dock", config)
+        step("host", "dock")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -124,6 +126,9 @@ def _parser() -> argparse.ArgumentParser:
         group.add_argument(off, dest=dest, action="store_const", const=False)
     common.add_argument("--revoke-remote-login", dest="revoke_remote_login", action="store_const",
                         const=True, help="revoke Remote Login; wins over --remote-login")
+    common.add_argument("--check", action="store_true",
+                        help="report supported changes without making them; a limited preview, "
+                             "not a full simulation of every step")
     parser = argparse.ArgumentParser(prog="setup.py", description="Configure this Mac or Ubuntu machine.")
     actions = parser.add_subparsers(dest="action", required=True, metavar="ACTION")
     for name, summary in ACTIONS.items():
@@ -155,8 +160,9 @@ def main(argv: list[str] | None = None) -> int:
                                     flags=args.flags, mise=args.mise)
         prefix = config["brew_prefix"]
         os.environ["PATH"] = os.pathsep.join([f"{prefix}/bin", f"{prefix}/sbin", os.environ.get("PATH", "")])
-        print(f"{args.action}: {config['platform']} / {config['profile']}")
-        dispatch(args.action, config, _Modules())
+        mode = " (check mode: no changes)" if args.check else ""
+        print(f"{args.action}: {config['platform']} / {config['profile']}{mode}")
+        dispatch(args.action, config, _Modules(), check=args.check)
     except RuntimeError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

@@ -109,13 +109,23 @@ DOCK_ITEMS = (
 )
 
 
-def run(action: str, config: dict) -> None:
-    """Apply one host configuration action: preflight, bootstrap, git, zsh, fzf, osx, dock, dotfiles."""
+def run(action: str, config: dict, *, check: bool = False) -> None:
+    """Apply one host action: preflight, bootstrap, git, zsh, fzf, osx, dock, dotfiles.
+
+    With ``check`` nothing changes: preflight runs as usual, bootstrap and git
+    report what they would change, and the other actions only say they are not
+    previewed.
+    """
     actions = {"preflight": preflight, "bootstrap": bootstrap, "git": git, "zsh": zsh,
                "fzf": fzf, "osx": osx, "dock": dock, "dotfiles": dotfiles}
     if action not in actions:
         raise ValueError(f"Unknown host action {action!r}")
-    actions[action](config)
+    if not check or action == "preflight":
+        actions[action](config)
+    elif action in ("bootstrap", "git"):
+        actions[action](config, check=True)
+    else:
+        print(f"{action}: not previewed in check mode; nothing changed.")
 
 
 # Command helpers -----------------------------------------------------------
@@ -179,7 +189,7 @@ def _is_external(path: Path) -> bool:
     return path.is_symlink()
 
 
-def ensure_block(path: Path, marker: str, lines: list[str]) -> bool:
+def ensure_block(path: Path, marker: str, lines: list[str], *, check: bool = False) -> bool:
     """Insert or replace '# BEGIN/END <marker>' lines, like Ansible blockinfile.
 
     Symlinked files are reported and left untouched so setup never edits the
@@ -199,6 +209,9 @@ def ensure_block(path: Path, marker: str, lines: list[str]) -> bool:
         updated = current + block
     if updated == current:
         return False
+    if check:
+        print(f"{path}: would update the {marker} block.")
+        return True
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     _write_if_changed(path, "\n".join(updated) + "\n", mode)
     print(f"{path}: updated the {marker} block.")
@@ -224,32 +237,41 @@ def preflight(config: dict) -> None:
         print(f"Disk usage is {percent}%. Consider freeing up space before proceeding.")
 
 
-def bootstrap(config: dict) -> None:
+def bootstrap(config: dict, check: bool = False) -> None:
     """First-run user setup after mise: SSH/GnuPG folders, shell activation, early 1Password."""
     home = Path(config["home"])
-    for folder in (".ssh", ".gnupg"):
-        (home / folder).mkdir(exist_ok=True)
+    if not check:
+        for folder in (".ssh", ".gnupg"):
+            (home / folder).mkdir(exist_ok=True)
     prefix = config["brew_prefix"]
     for name in _shell_files(config):
         shell = "zsh" if name == ".zshrc" else "bash"
         ensure_block(home / name, "dev-machine mise", [
             f'export PATH="{prefix}/bin:{prefix}/sbin:$PATH"',
             f'eval "$({shlex.quote(config["mise"])} activate {shell})"',
-        ])
+        ], check=check)
     if config["platform"] == "mac" and config["manage_ssh_config"]:
         installed = (Path("/Applications/1Password.app").exists()
                      or Path(prefix, "Caskroom", "1password").exists())
-        if not installed:
+        if not installed and check:
+            print("1Password: would install the desktop app (brew-cask:1password).")
+        elif not installed:
             _mise(config, "bootstrap", "packages", "apply", "--yes", "brew-cask:1password")
         print("Open 1Password, sign in, and enable its SSH agent before using Git over SSH.")
 
 
-def git(config: dict) -> None:
+def git(config: dict, check: bool = False) -> None:
     """Install the latest Git and set the global identity, ignore file, and defaults."""
-    _formula(config, "git", latest=True)
+    if check:
+        print("Git: would install or upgrade brew:git.")
+    else:
+        _formula(config, "git", latest=True)
     target = Path(config["home"], ".global_gitignore")
     if _is_external(target):
         print(f"{target}: left unchanged because it is a symlink to externally managed configuration.")
+    elif check:
+        if not target.is_file() or target.read_text() != GLOBAL_GITIGNORE.read_text():
+            print(f"{target}: would be replaced with the managed global ignore file.")
     elif _write_if_changed(target, GLOBAL_GITIGNORE.read_text(), 0o644):
         print(f"Updated {target}.")
     settings = (("user.email", config["git_email"]), ("user.name", config["git_name"])) + GIT_SETTINGS
@@ -257,8 +279,11 @@ def git(config: dict) -> None:
         current = subprocess.run(["git", "config", "--global", "--get", name],
                                  text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         if current.returncode != 0 or current.stdout.rstrip("\n") != value:
-            _run(["git", "config", "--global", name, value])
-    print("Git: identity and global settings applied.")
+            if check:
+                print(f"Git: would set {name} = {value}")
+            else:
+                _run(["git", "config", "--global", name, value])
+    print("Git: check complete; nothing changed." if check else "Git: identity and global settings applied.")
 
 
 def _checkout(repo: str, dest: Path, version: str) -> None:
