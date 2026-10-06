@@ -453,7 +453,7 @@ def _attribute(output: str, key: str) -> list:
         if line.startswith(key + ":"):
             values = line[len(key) + 1:].split()
             for continuation in lines[index + 1:]:
-                if values or not continuation.startswith(" "):
+                if not continuation.startswith(" "):
                     break
                 values += continuation.split()
             return values

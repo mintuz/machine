@@ -414,9 +414,10 @@ with tempfile.TemporaryDirectory() as directory:
         access.write_text(json.dumps({"exists": True, "members": [USER, "intruder"],
                                       "nested": {"GUID-ADMIN": "admin", "GUID-ORPHAN": None}}))
 
-    def unchanged(config_text=original_config, service_running=True):
+    def unchanged(config_text=original_config, service_running=True, service_disabled=None):
         assert authorized_keys.read_text() == old_keys, "Authorised keys changed"
-        assert running.exists() == service_running and disabled.exists() != service_running
+        assert running.exists() == service_running
+        assert disabled.exists() == (not service_running if service_disabled is None else service_disabled)
         assert (managed.read_text() if managed.exists() else None) == config_text, "Managed configuration changed"
         assert json.loads(access.read_text())["members"] == [USER, "intruder"], "Access list changed"
 
@@ -479,7 +480,7 @@ with tempfile.TemporaryDirectory() as directory:
     enable = {"manage_remote_login": True}
     fails(invoke("remote-login", env={"TEST_REMOTE_STOP_FAIL": "1"}, **enable),
           "Could not stop Remote Login", "bootout refused", "No SSH configuration or keys have been replaced")
-    unchanged()
+    unchanged(service_disabled=True)
     assert not any(line.startswith("sshd") for line in logged())
     print("PASS: a listener stop failure prevents configuration validation and writes")
 
