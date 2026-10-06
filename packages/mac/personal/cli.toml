@@ -1,0 +1,3 @@
+[packages]
+# Remote shell sessions from a phone (remote-login)
+"brew:mosh" = "latest"

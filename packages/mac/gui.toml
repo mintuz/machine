@@ -1,0 +1,65 @@
+# Homebrew casks installed for both profiles. Failures are reported and
+# setup continues.
+
+[packages]
+# Productivity and window management
+"brew-cask:cleanshot" = "latest"
+"brew-cask:bettertouchtool" = "latest"
+"brew-cask:lunar" = "latest"
+"brew-cask:clop" = "latest"
+"brew-cask:gas-mask" = "latest"
+"brew-cask:rectangle-pro" = "latest"
+"brew-cask:alt-tab" = "latest"
+"brew-cask:popclip" = "latest"
+"brew-cask:bartender" = "latest"
+"brew-cask:rcmd" = "latest"
+"brew-cask:hammerspoon" = "latest"
+"brew-cask:raycast" = "latest"
+"brew-cask:thaw" = "latest"
+
+# Privacy, security, and authentication
+"brew-cask:protonvpn" = "latest"
+"brew-cask:little-snitch" = "latest"
+"brew-cask:micro-snitch" = "latest"
+"brew-cask:1password" = "latest"
+"brew-cask:authy" = "latest"
+
+# Terminals and developer tools
+"brew-cask:httpie" = "latest"
+"brew-cask:warp" = "latest"
+"brew-cask:ghostty" = "latest"
+"brew-cask:cursor" = "latest"
+"brew-cask:docker-desktop" = "latest"
+"brew-cask:bruno" = "latest"
+
+# AI assistants
+"brew-cask:chatgpt" = "latest"
+"brew-cask:codex-app" = "latest"
+"brew-cask:claude" = "latest"
+"brew-cask:fluidvoice" = "latest"
+
+# Browsers
+"brew-cask:firefox" = "latest"
+"brew-cask:helium-browser" = "latest"
+
+# Notes and knowledge
+"brew-cask:obsidian" = "latest"
+"brew-cask:notion" = "latest"
+"brew-cask:voicenotes" = "latest"
+
+# Cloud storage and communication
+"brew-cask:dropbox" = "latest"
+"brew-cask:zoom" = "latest"
+"brew-cask:slack" = "latest"
+
+# Design, media, and recording
+"brew-cask:figma" = "latest"
+"brew-cask:rotato" = "latest"
+"brew-cask:camo-studio" = "latest"
+"brew-cask:sketch" = "latest"
+
+# Fonts
+"brew-cask:font-fira-code" = "latest"
+"brew-cask:font-hack" = "latest"
+"brew-cask:font-jetbrains-mono" = "latest"
+"brew-cask:font-recursive-code" = "latest"

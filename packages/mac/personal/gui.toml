@@ -1,0 +1,16 @@
+# Personal-only packages can be added here.
+
+[packages]
+# Proton apps
+"brew-cask:proton-mail" = "latest"
+"brew-cask:proton-drive" = "latest"
+
+# Communication
+"brew-cask:discord" = "latest"
+
+# Hardware and gaming
+"brew-cask:steelseries-gg" = "latest"
+
+# Media
+"brew-cask:vlc" = "latest"
+"brew-cask:downie" = "latest"
