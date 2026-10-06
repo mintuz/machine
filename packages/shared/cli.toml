@@ -1,10 +1,11 @@
 # CLI tools shared by macOS, Ubuntu, and both profiles. Failures stop setup.
 #
-# [packages] uses mise bootstrap package names: "brew:<formula>" installs a
-# homebrew/core formula into the Homebrew prefix without needing Homebrew, and
-# "brew-cask:<token>" installs a cask (macOS only). [tools] are mise tools
-# recorded in the machine's global mise configuration. Use { os = "macos" } or
-# { os = "linux" } when a package needs a different provider per platform.
+# [packages] are installed and upgraded by Homebrew: "brew:<formula>" (use
+# "brew:<owner>/<tap>/<formula>" for a third-party tap) and "brew-cask:<token>"
+# (macOS only, except fonts; add greedy = true to upgrade self-updating casks).
+# [tools] are mise tools recorded in the machine's global mise configuration.
+# Use { os = "macos" } or { os = "linux" } when a package needs a different
+# provider per platform.
 
 [packages]
 # Version control
@@ -52,13 +53,13 @@
 # System monitoring
 "brew:glances" = "latest"
 
-# AI and app CLIs. mise installs only font casks on Linux, so Linux uses the
-# matching tools below.
+# AI and app CLIs. These casks are macOS-only, so Linux uses the matching
+# tools below.
 "brew-cask:codex" = { os = "macos" }
 "brew:opencode" = "latest"
 "brew-cask:notion-cli" = { os = "macos" }
 "brew-cask:1password-cli" = { os = "macos" }
-"brew-cask:claude-code@latest" = { os = "macos" }
+"brew-cask:claude-code@latest" = { os = "macos", greedy = true }
 
 [tools]
 # Language runtimes and package managers

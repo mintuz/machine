@@ -5,10 +5,10 @@ shared, shared/<profile>, <platform>, <platform>/<profile>. Kinds are cli
 (required), cli-optional, gui, gui-optional, and app-store; GUI and App Store
 kinds apply only on macOS.
 
-Native packages are installed by `mise bootstrap packages`, which needs no
-Homebrew executable. mise tools are recorded in a machine-owned global mise
-fragment, conf.d/dev-machine-setup.toml, so they work outside this checkout
-without replacing the user's own mise configuration.
+Formulae and casks are installed and upgraded by Homebrew; App Store apps by
+mas. mise tools (runtimes and the Linux providers of CLI casks) are recorded in
+a machine-owned global mise fragment, conf.d/dev-machine-setup.toml, so they
+work outside this checkout without replacing the user's own mise configuration.
 """
 from __future__ import annotations
 
@@ -36,8 +36,8 @@ PACKAGE_MANAGERS = {
 }
 PROVIDERS = {
     "tool": "mise tool",
-    "brew": "Homebrew formula via mise",
-    "brew-cask": "Homebrew cask via mise; Homebrew-owned casks via brew",
+    "brew": "Homebrew formula",
+    "brew-cask": "Homebrew cask",
     "mas": "mas",
 }
 MISE_OS = {"mac": "macos", "linux": "linux"}
@@ -60,6 +60,7 @@ class Entry:
     version: str
     os: frozenset
     label: str
+    greedy: bool = False
 
     @property
     def is_tool(self):
@@ -98,13 +99,16 @@ class _Shell:
         extra = [p for p in (f"{prefix}/bin", f"{prefix}/sbin") if p not in paths]
         self.env["PATH"] = os.pathsep.join([*extra, *paths])
 
-    def run(self, argv, *, env=None, cwd="/"):
+    def run(self, argv, *, env=None, cwd="/", input=None):
         print("$ " + shlex.join(str(part) for part in argv), flush=True)
+        if input is not None:
+            print("".join(f"  | {line}\n" for line in input.splitlines()), end="", flush=True)
         if self.check:
             print("  (check: not run)", flush=True)
             return 0
         try:
-            return subprocess.run([str(part) for part in argv], env=env or self.env, cwd=cwd).returncode
+            return subprocess.run([str(part) for part in argv], env=env or self.env, cwd=cwd,
+                                  input=input, text=input is not None).returncode
         except OSError as error:
             print(f"  {error}", flush=True)
             return 127
@@ -142,16 +146,6 @@ def inventory_files(config):
             if (root / layer / f"{kind}.toml").is_file()]
 
 
-def _all_inventory_files(config):
-    """Every inventory file for this platform, whatever its profile."""
-    inventory_files(config)
-    root = Path(config["repo_dir"]) / "packages"
-    layers = ["shared", config["platform"]]
-    layers += [f"{layer}/{profile}" for layer in layers for profile in ("personal", "work")]
-    return [root / layer / f"{kind}.toml" for layer in layers for kind in KINDS
-            if (root / layer / f"{kind}.toml").is_file()]
-
-
 def _parse(path, repo_dir):
     relative = path.relative_to(Path(repo_dir)).as_posix()
     kind = path.stem
@@ -176,9 +170,13 @@ def _parse(path, repo_dir):
             options = {"version": value} if isinstance(value, str) else value
             if not isinstance(options, dict):
                 fail(f"{key} must be a version string or table")
-            allowed = {"version", "os"} | ({"name"} if key.startswith("mas:") else set())
+            allowed = {"version", "os"}
+            allowed |= {"name"} if key.startswith("mas:") else set()
+            allowed |= {"greedy"} if key.startswith("brew-cask:") else set()
             if set(options) - allowed:
                 fail(f"{key} has unsupported options {sorted(set(options) - allowed)}")
+            if not isinstance(options.get("greedy", False), bool):
+                fail(f"{key} greedy must be true or false")
             version = options.get("version", "latest")
             selector = options.get("os")
             if not isinstance(version, str) or not version:
@@ -202,9 +200,10 @@ def _parse(path, repo_dir):
                     fail(f"{key} needs a numeric App Store ID")
                 if (manager == "brew-cask" and kind not in MAC_ONLY_KINDS and "linux" in platforms
                         and not name.startswith("font-")):
-                    fail(f"{key} is not supported on Linux; add os = \"macos\" and a Linux tool")
+                    fail(f"{key}: casks other than fonts are macOS-only; add os = \"macos\" and a Linux tool")
             label = f"{key} ({options['name']})" if "name" in options else key
-            entries.append(Entry(kind, key, manager, name, version, frozenset(platforms), label))
+            entries.append(Entry(kind, key, manager, name, version, frozenset(platforms), label,
+                                 options.get("greedy", False)))
     return entries
 
 
@@ -229,8 +228,17 @@ def brew_prefix(config):
 
 
 def _brew(config):
-    path = brew_prefix(config) / "bin/brew"
+    """The Homebrew executable when it is installed, otherwise None."""
+    path = Path(config.get("brew") or brew_prefix(config) / "bin/brew")
     return path if os.access(path, os.X_OK) else None
+
+
+def _require_brew(config):
+    brew = _brew(config)
+    if not brew:
+        raise RuntimeError(f"Homebrew is needed to install packages but was not found at "
+                           f"{config.get('brew') or brew_prefix(config) / 'bin/brew'}. Run the bootstrap first.")
+    return brew
 
 
 def fragment_path(config):
@@ -264,11 +272,7 @@ def _toml_value(value, path):
 
 
 def record_tools(config, shell, tools):
-    """Add tools to the machine-owned global mise fragment, keeping earlier entries.
-
-    The fragment also enables cask adoption so an existing app bundle is kept
-    instead of replaced, matching `brew install --cask --adopt`.
-    """
+    """Add tools to the machine-owned global mise fragment, keeping earlier entries."""
     path = fragment_path(config)
     for part in (path.parent.parent, path.parent, path):
         if part.is_symlink():
@@ -276,12 +280,12 @@ def record_tools(config, shell, tools):
                                "it may belong to another repository.")
     existing = _fragment_tools(config)
     merged = {**existing, **tools}
-    lines = [FRAGMENT_HEADER, "[bootstrap.brew]", "adopt = true", "", "[tools]"]
+    lines = [FRAGMENT_HEADER, "[tools]"]
     lines += [f"{json.dumps(key)} = {_toml_value(value, path)}" for key, value in merged.items()]
     content = "\n".join(lines) + "\n"
     if path.exists() and path.read_text() == content:
         return
-    print(f"Recording mise tools in {path}: {', '.join(tools) or 'cask adoption default'}", flush=True)
+    print(f"Recording mise tools in {path}: {', '.join(tools) or 'none yet'}", flush=True)
     if shell.check:
         print("  (check: not written)", flush=True)
         return
@@ -301,8 +305,25 @@ def _mise(config):
     return config["mise"]
 
 
-def _apply_packages(config, shell, keys):
-    return shell.run([_mise(config), "bootstrap", "packages", "apply", "--yes", *keys])
+def _brewfile(entries):
+    """A Brewfile for entries, tapping third-party formula taps first."""
+    lines = []
+    for entry in entries:
+        if entry.manager == "brew":
+            parts = entry.name.split("/")
+            tap = f"tap {json.dumps('/'.join(parts[:2]))}"
+            if len(parts) == 3 and tap not in lines:
+                lines.append(tap)
+            lines.append(f"brew {json.dumps(entry.name)}")
+        else:
+            lines.append(f"cask {json.dumps(entry.name)}" + (", greedy: true" if entry.greedy else ""))
+    return "".join(line + "\n" for line in lines)
+
+
+def _bundle(shell, brew, entries):
+    """Install missing and upgrade outdated packages with `brew bundle`, as before."""
+    return shell.run([brew, "bundle", "install", "--file=-"], input=_brewfile(entries),
+                     env=dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1"))
 
 
 def _install_tools(config, shell, entries):
@@ -536,14 +557,20 @@ def _packages(config, shell):
     print(f"mise runtime fragment: {fragment_path(config)}")
 
 
+def _brew_update(shell, brew):
+    if shell.run([brew, "update"]) != 0:
+        raise RuntimeError("Updating Homebrew failed. See the output above.")
+
+
 def _cli(config, shell):
     entries = selected_entries(config)
     required = [entry for entry in entries if entry.kind == "cli"]
     optional = [entry for entry in entries if entry.kind == "cli-optional"]
-    record_tools(config, shell, {})
-    _remove_disabled_tldr(config, shell)
+    brew = _require_brew(config)
+    _brew_update(shell, brew)
+    _remove_disabled_tldr(config, shell, brew)
     packages = [entry for entry in required if not entry.is_tool]
-    if _converge_packages(config, shell, packages):
+    if packages and _bundle(shell, brew, packages) != 0:
         raise RuntimeError("Required CLI packages failed to install or upgrade. See the output above.")
     tools = [entry for entry in required if entry.is_tool]
     if tools:
@@ -557,7 +584,7 @@ def _cli(config, shell):
     failures = []
     for entry in optional:
         failed = (_install_tools(config, shell, [entry]) != 0 if entry.is_tool
-                  else bool(_converge_packages(config, shell, [entry])))
+                  else _bundle(shell, brew, [entry]) != 0)
         if failed:
             failures.append(entry.key)
         elif entry.is_tool:
@@ -565,43 +592,10 @@ def _cli(config, shell):
     _report("Optional CLI failures", failures)
 
 
-def _remove_disabled_tldr(config, shell):
+def _remove_disabled_tldr(config, shell, brew):
     """tlrc replaces the disabled tldr formula, which also provides `tldr`."""
-    if not (brew_prefix(config) / "Cellar/tldr").exists():
-        return
-    brew = _brew(config)
-    if not brew:
-        raise RuntimeError("The disabled tldr formula blocks tlrc; Homebrew is needed to uninstall it.")
-    if shell.run([brew, "uninstall", "tldr"]) != 0:
+    if (brew_prefix(config) / "Cellar/tldr").exists() and shell.run([brew, "uninstall", "tldr"]) != 0:
         raise RuntimeError("Could not uninstall the disabled tldr formula.")
-
-
-def _brew_owned_cask(config, token):
-    return (brew_prefix(config) / "Caskroom" / token / ".metadata").is_dir()
-
-
-def _converge_packages(config, shell, entries):
-    """Install missing packages and upgrade installed ones, as `brew bundle` did.
-
-    Casks that Homebrew already owns stay with Homebrew: they are upgraded with
-    `brew upgrade --cask --greedy` when Homebrew is installed and otherwise left
-    unchanged. Returns the entries that failed.
-    """
-    owned = [entry for entry in entries
-             if entry.manager == "brew-cask" and _brew_owned_cask(config, entry.name)]
-    native = [entry.key for entry in entries if entry not in owned]
-    failed = []
-    if native and (_apply_packages(config, shell, native) != 0 or shell.run(
-            [_mise(config), "bootstrap", "packages", "upgrade", "--yes", *native]) != 0):
-        failed += [entry for entry in entries if entry not in owned]
-    brew = _brew(config)
-    brew_env = dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1")
-    for entry in owned:
-        if not brew:
-            print(f"Leaving Homebrew-owned cask {entry.name} unchanged: Homebrew is not installed.", flush=True)
-        elif shell.run([brew, "upgrade", "--cask", "--greedy", entry.name], env=brew_env) != 0:
-            failed.append(entry)
-    return failed
 
 
 def _gui(config, shell):
@@ -609,8 +603,15 @@ def _gui(config, shell):
         print("GUI applications are installed only on macOS; skipping.")
         return
     entries = [entry for entry in selected_entries(config) if entry.kind in ("gui", "gui-optional")]
-    record_tools(config, shell, {})
-    failures = [failed.name for entry in entries for failed in _converge_packages(config, shell, [entry])]
+    brew = _require_brew(config)
+    _brew_update(shell, brew)
+    env = dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1")
+    failures = []
+    for entry in entries:
+        installed, _ = shell.query([brew, "list", "--cask", entry.name], env=env)
+        command = (["upgrade", "--cask", "--greedy"] if installed == 0 else ["install", "--cask", "--adopt"])
+        if shell.run([brew, *command, entry.name], env=env) != 0:
+            failures.append(entry.name)
     _report("GUI cask failures", failures)
 
 
@@ -621,7 +622,8 @@ def _app_store(config, shell):
     entries = [entry for entry in selected_entries(config) if entry.kind == "app-store"]
     mas = shell.which("mas")
     if not mas:
-        if _apply_packages(config, shell, ["brew:mas"]) != 0:
+        brew = _require_brew(config)
+        if shell.run([brew, "install", "mas"], env=dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1")) != 0:
             raise RuntimeError("Could not install the mas CLI needed for App Store apps.")
         mas = shell.which("mas") or str(brew_prefix(config) / "bin/mas")
     shell.run(["mdimport", "/Applications"])
@@ -703,17 +705,6 @@ def _update(config, shell):
     else:
         for name in ("Homebrew metadata", "Homebrew formulae", "Homebrew casks", "Homebrew cleanup"):
             component(name, "skipped")
-
-    # Homebrew already upgraded every formula in the prefix, including ones mise
-    # poured, and owns its casks; mise upgrades only what Homebrew cannot.
-    native = sorted({entry.key for entry in _entries(config, _all_inventory_files(config))
-                     if entry.manager in ("brew", "brew-cask") and not (brew and entry.manager == "brew")
-                     and not (entry.manager == "brew-cask" and _brew_owned_cask(config, entry.name))})
-    if native:
-        component("mise bootstrap packages", status(shell.run(
-            [_mise(config), "bootstrap", "packages", "upgrade", "--yes", *native])))
-    else:
-        component("mise bootstrap packages", "skipped")
 
     tools = _fragment_tools(config)
     node_request = tools.get("node")

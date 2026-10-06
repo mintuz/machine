@@ -19,6 +19,7 @@ from devsetup import software  # noqa: E402
 
 FAKE = """#!/bin/sh
 line="{name} $*"
+{pre}
 printf '%s\\n' "$line" >> "$FAKE_LOG"
 {extra}
 IFS='|'
@@ -27,6 +28,9 @@ for pattern in $FAKE_FAIL; do
 done
 exit 0
 """
+# brew bundle logs its Brewfile from stdin on the same line, joined by "; ".
+BREW_PRE = """[ "$1" = bundle ] && line="$line: $(sed 's/$/;/' | tr '\\n' ' ')"
+if [ "$1" = list ]; then printf '%s\\n' "$line" >> "$FAKE_LOG"; [ -d "$FAKE_PREFIX/Caskroom/$3" ]; exit $?; fi"""
 # The selected mise Node is the path in $FAKE_NODE_FILE. Installing or upgrading
 # Node switches it to $FAKE_NODE_AFTER when that is set.
 MISE_EXTRA = """case "$*" in
@@ -62,15 +66,15 @@ def write(path, text):
     return path
 
 
-def fake(path, name, extra=""):
-    write(path, FAKE.format(name=name, extra=extra)).chmod(0o755)
+def fake(path, name, extra="", pre=""):
+    write(path, FAKE.format(name=name, extra=extra, pre=pre)).chmod(0o755)
 
 
 class Machine:
     """A temporary home, Homebrew prefix, and fake commands for one scenario."""
 
     def __init__(self, directory, platform="mac", profile="personal", repo=root,
-                 brew=False, commands=("mas", "npm", "pnpm", "ollama", "sudo", "mdimport")):
+                 brew=True, commands=("mas", "npm", "pnpm", "ollama", "sudo", "mdimport")):
         self.base = Path(directory)
         self.home = self.base / "home"
         self.home.mkdir()
@@ -84,19 +88,22 @@ class Machine:
         for name in commands:
             fake(self.bin / name, name, extras.get(name, ""))
         if brew:
-            fake(self.prefix / "bin/brew", "brew")
+            self.add_brew()
         self.config = {
             "home": str(self.home), "repo_dir": str(repo), "platform": platform, "profile": profile,
             "user": "tester", "shell_path": "/bin/zsh", "ssh_agent_socket": "SSH_AUTH_SOCK",
             "pnpm_home": str(self.home / "pnpm"), "mise": str(self.bin / "mise"),
-            "brew_prefix": str(self.prefix), "pnpm_global_packages": [],
+            "brew_prefix": str(self.prefix), "brew": str(self.prefix / "bin/brew"), "pnpm_global_packages": [],
         }
         self.env = {"PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin", "FAKE_LOG": str(self.log),
                     "FAKE_FAIL": "", "MISE_CONFIG_DIR": str(self.home / ".config/mise"),
-                    "FAKE_NODE_FILE": str(self.base / "node-path")}
+                    "FAKE_NODE_FILE": str(self.base / "node-path"), "FAKE_PREFIX": str(self.prefix)}
         self.fragment = self.home / ".config/mise/conf.d/dev-machine-setup.toml"
         self.active_bin = self.runtime("24.0.0")
         self.select_node(self.active_bin)
+
+    def add_brew(self):
+        fake(self.prefix / "bin/brew", "brew", pre=BREW_PRE)
 
     def runtime(self, version, packages=None):
         """A fake mise Node install with npm globals {name: version}; returns its bin dir."""
@@ -210,7 +217,9 @@ with tempfile.TemporaryDirectory() as directory:
         ("mac/cli.toml", '[packages]\n"brew:git" = "2.0"\n', "cannot be pinned"),
         ("mac/gui.toml", '[packages]\n"brew:git" = "latest"\n', "not allowed in gui"),
         ("mac/app-store.toml", '[packages]\n"mas:Drafts" = "latest"\n', "numeric App Store ID"),
-        ("shared/cli-optional.toml", '[packages]\n"brew-cask:codex" = "latest"\n', "not supported on Linux"),
+        ("shared/cli-optional.toml", '[packages]\n"brew-cask:codex" = "latest"\n', "macOS-only"),
+        ("mac/cli.toml", '[packages]\n"brew-cask:codex" = { greedy = "yes" }\n', "greedy must be"),
+        ("mac/cli.toml", '[packages]\n"brew:git" = { greedy = true }\n', "unsupported options"),
         ("mac/cli.toml", '[tools]\nnode = { version = "lts", os = "linux" }\n', "never applies"),
     ):
         path = write(repo / "packages" / relative, text)
@@ -223,94 +232,87 @@ with tempfile.TemporaryDirectory() as directory:
 print("PASS: missing layers are allowed; misspelt, missing, unsupported, and malformed inventories fail")
 
 CLI_REPO = {
-    "shared/cli.toml": '[packages]\n"brew:git" = "latest"\n"brew-cask:codex" = { os = "macos" }\n'
+    "shared/cli.toml": '[packages]\n"brew:git" = "latest"\n"brew-cask:codex" = { os = "macos", greedy = true }\n'
                        '[tools]\nnode = "lts"\npnpm = "latest"\n"aqua:openai/codex" = { version = "latest", os = "linux" }\n',
-    "mac/cli-optional.toml": '[packages]\n"brew:first" = "latest"\n"brew:second" = "latest"\n'
+    "mac/cli-optional.toml": '[packages]\n"brew:first" = "latest"\n"brew:acme/tools/second" = "latest"\n'
                              '[tools]\n"aqua:x/broken" = "latest"\n"aqua:x/works" = "latest"\n',
     "mac/gui.toml": '[packages]\n"brew-cask:owned" = "latest"\n"brew-cask:fresh" = "latest"\n"brew-cask:bad" = "latest"\n',
     "mac/app-store.toml": '[packages]\n"mas:111" = { name = "One" }\n"mas:222" = { name = "Two" }\n',
 }
+BUNDLE = "brew bundle install --file=-: "
 
-# B11: check mode prints the plan but runs and writes nothing.
+# B11: check mode prints the plan but runs only read-only queries and writes nothing.
 for platform in ("mac", "linux"):
     with tempfile.TemporaryDirectory() as directory:
-        machine = Machine(directory, platform, repo=fixture_repo(directory, CLI_REPO), brew=True)
+        machine = Machine(directory, platform, repo=fixture_repo(directory, CLI_REPO))
         machine.config["pnpm_global_packages"] = ["typescript"]
         before = snapshot(machine.base)
         for action in ("cli", "gui", "app-store", "node", "update"):
             machine.run(action, check=True)
-        assert machine.calls() == ["ollama list"] and snapshot(machine.base) == before
+        assert all(call.startswith(("ollama list", "brew list --cask ")) for call in machine.calls()), machine.calls()
+        assert snapshot(machine.base) == before
 print("PASS: check mode runs no installers and writes no files")
 
 # Required CLI failures stop; optional failures are reported and the rest continue.
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
-    output = machine.run("cli", FAKE_FAIL="apply --yes brew:first|install aqua:x/broken@latest")
+    output = machine.run("cli", FAKE_FAIL='brew "first"|install aqua:x/broken@latest')
     calls = machine.calls()
-    assert calls[:2] == ["mise bootstrap packages apply --yes brew:git brew-cask:codex",
-                         "mise bootstrap packages upgrade --yes brew:git brew-cask:codex"], calls
+    assert calls[:2] == ["brew update", BUNDLE + 'brew "git"; cask "codex", greedy: true; '], calls
     assert "mise install node@lts pnpm@latest" in calls
-    assert "mise bootstrap packages apply --yes brew:second" in calls
+    assert BUNDLE + 'tap "acme/tools"; brew "acme/tools/second"; ' in calls
     assert "Optional CLI failures: brew:first, aqua:x/broken" in output, output
     assert machine.tools() == {"node": "lts", "pnpm": "latest", "aqua:x/works": "latest"}
-    assert "adopt = true" in machine.fragment.read_text()
-    assert not any(call.startswith("brew ") for call in calls), "Setup needed the Homebrew executable"
+    assert not any("bootstrap packages" in call for call in calls)
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
-    fails(lambda: machine.run("cli", FAKE_FAIL="brew:git"), "Required CLI packages failed")
-    assert not any("install" in call and "apply" not in call for call in machine.calls())
+    fails(lambda: machine.run("cli", FAKE_FAIL='brew "git"'), "Required CLI packages failed")
+    assert not any(call.startswith("mise install") for call in machine.calls())
+    machine.log.write_text("")
+    fails(lambda: machine.run("cli", FAKE_FAIL="brew update"), "Updating Homebrew failed")
+    assert machine.calls() == ["brew update"]
     machine.log.write_text("")
     fails(lambda: machine.run("cli", FAKE_FAIL="mise install node"), "Required mise tools failed")
-    assert "node" not in machine.tools() and not any("brew:first" in call for call in machine.calls())
+    assert not machine.fragment.exists() and not any('"first"' in call for call in machine.calls())
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, "linux", repo=fixture_repo(directory, CLI_REPO))
     machine.run("cli")
-    calls = [call for call in machine.calls() if call.startswith(("mise bootstrap", "mise install"))]
-    assert calls[:3] == ["mise bootstrap packages apply --yes brew:git",
-                         "mise bootstrap packages upgrade --yes brew:git",
-                         "mise install node@lts pnpm@latest aqua:openai/codex@latest"]
-for brew in (True, False):
-    with tempfile.TemporaryDirectory() as directory:
-        machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), brew=brew)
-        (machine.prefix / "Caskroom/codex/.metadata").mkdir(parents=True)
-        output = machine.run("cli")
-        calls = machine.calls()
-        assert calls[0] == "mise bootstrap packages apply --yes brew:git"
-        assert ("brew upgrade --cask --greedy codex" in calls) == brew
-        assert brew or "Homebrew-owned cask codex unchanged" in output
-        assert not any("brew-cask:codex" in call for call in calls)
-print("PASS: required CLI failures stop setup; optional failures are reported; Linux uses tool providers; "
-      "Homebrew-owned casks stay Brew-updated")
+    calls = [call for call in machine.calls() if call.startswith(("brew", "mise install"))]
+    assert calls[:3] == ["brew update", BUNDLE + 'brew "git"; ',
+                         "mise install node@lts pnpm@latest aqua:openai/codex@latest"], calls
+with tempfile.TemporaryDirectory() as directory:
+    machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), brew=False)
+    before = snapshot(machine.base)
+    for action in ("cli", "gui"):
+        fails(lambda: machine.run(action), "Homebrew is needed")
+    assert machine.calls() == [] and snapshot(machine.base) == before
+print("PASS: required CLI failures stop setup; optional failures are reported; taps and greedy casks "
+      "are kept; Linux uses tool providers; package installs need Homebrew")
 
-# The disabled tldr formula is removed before tlrc only when Homebrew can do it.
+# The disabled tldr formula is removed before tlrc.
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
     (machine.prefix / "Cellar/tldr").mkdir(parents=True)
-    fails(lambda: machine.run("cli"), "tldr")
-    assert machine.calls() == []
-    fake(machine.prefix / "bin/brew", "brew")
     machine.run("cli")
-    assert machine.calls()[0] == "brew uninstall tldr"
+    assert machine.calls()[:3] == ["brew update", "brew uninstall tldr", BUNDLE + 'brew "git"; cask "codex", greedy: true; ']
+    machine.log.write_text("")
+    fails(lambda: machine.run("cli", FAKE_FAIL="uninstall tldr"), "tldr")
+    assert not any(call.startswith(BUNDLE) for call in machine.calls())
 print("PASS: the disabled tldr formula is uninstalled before CLI packages")
 
-# GUI and App Store: Mac only, Homebrew-owned casks stay with Homebrew, failures reported.
+# GUI and App Store: Mac only; installed casks upgrade greedily, others install with --adopt.
 with tempfile.TemporaryDirectory() as directory:
-    machine = Machine(directory, "linux", repo=fixture_repo(directory, CLI_REPO), brew=True)
+    machine = Machine(directory, "linux", repo=fixture_repo(directory, CLI_REPO))
     assert "only on macOS" in machine.run("gui") and "only on macOS" in machine.run("app-store")
     assert machine.calls() == []
-for brew in (True, False):
-    with tempfile.TemporaryDirectory() as directory:
-        machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), brew=brew)
-        (machine.prefix / "Caskroom/owned/.metadata").mkdir(parents=True)
-        output = machine.run("gui", FAKE_FAIL="apply --yes brew-cask:bad")
-        calls = machine.calls()
-        assert ("brew upgrade --cask --greedy owned" in calls) == brew
-        assert not any("brew-cask:owned" in call for call in calls)
-        assert calls[-1] == "mise bootstrap packages apply --yes brew-cask:bad"
-        assert "mise bootstrap packages apply --yes brew-cask:fresh" in calls
-        assert "mise bootstrap packages upgrade --yes brew-cask:fresh" in calls
-        assert "GUI cask failures: bad" in output
-        assert brew or "Homebrew-owned cask owned unchanged" in output
+with tempfile.TemporaryDirectory() as directory:
+    machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
+    (machine.prefix / "Caskroom/owned").mkdir(parents=True)
+    output = machine.run("gui", FAKE_FAIL="install --cask --adopt bad")
+    calls = [call for call in machine.calls() if not call.startswith("brew list")]
+    assert calls == ["brew update", "brew upgrade --cask --greedy owned", "brew install --cask --adopt fresh",
+                     "brew install --cask --adopt bad"], calls
+    assert "GUI cask failures: bad" in output
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
     output = machine.run("app-store", FAKE_FAIL="mas get 111|mas install 111|mas get 222")
@@ -320,8 +322,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert "App Store installation failures: mas:111 (One)" in output, output
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), commands=("sudo", "mdimport"))
-    fails(lambda: machine.run("app-store", FAKE_FAIL="brew:mas"), "mas CLI")
-print("PASS: GUI and App Store failures are reported, Homebrew-owned casks stay Brew-updated, both Mac only")
+    fails(lambda: machine.run("app-store", FAKE_FAIL="brew install mas"), "mas CLI")
+    assert machine.calls() == ["brew install mas"]
+print("PASS: GUI and App Store failures are reported and setup continues; both are Mac only")
 
 # B10/B12: Node is installed and proven before the old provider is retired.
 for platform in ("mac", "linux"):
@@ -413,17 +416,16 @@ print("PASS: the runtime fragment is never written through a symlinked mise conf
 
 # B10/B12: updates continue past failures, skip missing tools, and fail at the end.
 with tempfile.TemporaryDirectory() as directory:
-    machine = Machine(directory, "linux", repo=fixture_repo(directory, CLI_REPO), commands=("mas",))
+    machine = Machine(directory, "linux", repo=fixture_repo(directory, CLI_REPO), brew=False, commands=("mas",))
     output = machine.run("update")
-    for name in ("Homebrew metadata", "mise tools", "npm globals", "pnpm globals", "Mac App Store", "Ollama models"):
+    for name in ("Homebrew metadata", "Homebrew formulae", "Homebrew casks", "mise tools", "npm globals",
+                 "pnpm globals", "Mac App Store", "Ollama models"):
         assert f"{name}: skipped" in output, output
-    assert "mise bootstrap packages upgrade --yes brew:git" in machine.calls()
-    assert not any(call.startswith(("mas", "brew")) for call in machine.calls())
+    assert machine.calls() == []
 for status in ("ok", "fail"):
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), brew=True)
         write(machine.fragment, '[tools]\nnode = "lts"\npnpm = "latest"\n')
-        (machine.prefix / "Caskroom/owned/.metadata").mkdir(parents=True)
         fail = "-- npm update -g|ollama pull first:latest" if status == "fail" else ""
         if status == "ok":
             output = machine.run("update")
@@ -434,8 +436,6 @@ for status in ("ok", "fail"):
         for command in ("brew update", "brew upgrade --formula", "brew upgrade --cask", "brew cleanup -s",
                         "mise upgrade --no-prune node pnpm", "mise exec -- pnpm update -g", "mas upgrade"):
             assert command in calls, (command, calls)
-        native = next(call for call in calls if call.startswith("mise bootstrap packages upgrade"))
-        assert native == "mise bootstrap packages upgrade --yes brew-cask:bad brew-cask:codex brew-cask:fresh"
         pulls = [call for call in calls if call.startswith("ollama pull")]
         assert pulls == (["ollama pull first:latest"] if status == "fail"
                          else ["ollama pull first:latest", "ollama pull second:latest"])

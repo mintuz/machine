@@ -1,11 +1,9 @@
-# Optional CLI tools that are more likely to break.
+# Optional CLI tools that use external taps or are more likely to break.
 # Failures are reported but do not stop the full setup.
 
 [packages]
-# Xcode project management
-"brew-cask:tuist" = "latest"
+# Apple platform tooling (taps xcodesorg/made)
+"brew:xcodesorg/made/xcodes" = "latest"
 
-[tools]
-# Apple platform tooling. The xcodesorg/made tap formula builds this same
-# upstream release from source; mise installs its checksummed release binary.
-"aqua:XcodesOrg/xcodes" = "latest"
+# Xcode project management
+"brew-cask:tuist" = { greedy = true }
