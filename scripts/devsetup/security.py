@@ -51,20 +51,24 @@ def run(action: str, config: dict, *, check: bool = False) -> None:
     """Run one security action; raise RuntimeError on failure."""
     if action not in ACTIONS:
         raise RuntimeError(f"Unknown security action {action!r}; expected one of {', '.join(ACTIONS)}.")
-    _require_normal_user(config)
-    _require_profile(config)
-    if action == "ssh":
-        _manage_ssh(config, check)
-    elif action == "remote-login-check":
-        _require_mac(config)
-        _preflight(config)
-        print("Prerequisites passed. No services, SSH configuration, or keys were changed. "
-              "This does not validate the effective SSH settings, firewall, or tailnet policy. "
-              'Read "Remote access from an iPhone" in README.md before enabling access.', flush=True)
-    elif action == "remote-login":
-        _enable_remote_login(config, check)
-    else:
-        _revoke_remote_login(config, check)
+    try:
+        _require_normal_user(config)
+        _require_profile(config)
+        if action == "ssh":
+            _manage_ssh(config, check)
+        elif action == "remote-login-check":
+            _require_mac(config)
+            _preflight(config)
+            print("Prerequisites passed. No services, SSH configuration, or keys were changed. "
+                  "This does not validate the effective SSH settings, firewall, or tailnet policy. "
+                  'Read "Remote access from an iPhone" in README.md before enabling access.', flush=True)
+        elif action == "remote-login":
+            _enable_remote_login(config, check)
+        else:
+            _revoke_remote_login(config, check)
+    except (OSError, shutil.Error, ValueError, TypeError) as error:
+        # Paths below give specific recovery messages; this keeps any other failure a RuntimeError.
+        raise RuntimeError(f"{action} failed: {error}") from error
 
 
 # Guards shared by direct callers and full setup.
@@ -215,14 +219,22 @@ def _manage_ssh(config: dict, check: bool) -> None:
               f"IdentityAgent \"{agent}\" with {primary} as the GitHub key and copy {personal} and {work}. "
               "Nothing was changed.", flush=True)
         return
+    backup = None
     if ssh_dir.exists():
-        backup = _new_backup_dir(home) / "ssh"
-        shutil.copytree(ssh_dir, backup, symlinks=True, ignore=_skip_agent_and_special_files)
+        try:
+            backup = _new_backup_dir(home) / "ssh"
+            shutil.copytree(ssh_dir, backup, symlinks=True, ignore=_skip_agent_and_special_files)
+        except (OSError, shutil.Error) as error:
+            raise RuntimeError(f"Could not back up {ssh_dir}: {error}. No managed SSH file was changed.") from error
         print(f"Backed up {ssh_dir} to {backup}.", flush=True)
-    _ensure_private_dir(ssh_dir)
-    _write_private(ssh_dir / "config", content.encode())
-    for name, data in keys.items():
-        _write_private(ssh_dir / name, data)
+    try:
+        _ensure_private_dir(ssh_dir)
+        _write_private(ssh_dir / "config", content.encode())
+        for name, data in keys.items():
+            _write_private(ssh_dir / name, data)
+    except OSError as error:
+        saved = f"The previous files are in {backup}." if backup else f"{ssh_dir} did not exist before this run."
+        raise RuntimeError(f"Managed SSH configuration may be incomplete: {error}. {saved}") from error
     print(f"Managed SSH uses the 1Password agent ({agent}) with {primary} for github.com and {alternate} "
           "for github-alt.com. Enable the 1Password SSH agent yourself; setup does not enable it or sign in.",
           flush=True)
@@ -358,8 +370,12 @@ def _enable_remote_login(config: dict, check: bool) -> None:
         raise RuntimeError(f"Could not stop Remote Login: {error} "
                            "No SSH configuration or keys have been replaced.") from error
     system.deploy_config(content, settings)
-    system.replace_authorized_keys(settings.home, settings.authorized_keys)
-    system.restrict_access(settings.user)
+    try:
+        system.replace_authorized_keys(settings.home, settings.authorized_keys)
+        system.restrict_access(settings.user)
+    except (RuntimeError, OSError) as error:
+        raise RuntimeError("Remote Login remains disabled: the checked configuration is installed, but "
+                           f"authorised keys or the access list could not be updated: {error}") from error
     system.activate()
     lines = [f"Host: {settings.host} ({', '.join(settings.addresses)})", f"User: {settings.user}",
              "Compare these host key fingerprints when an app connects for the first time:"]
@@ -390,7 +406,11 @@ def _revoke_remote_login(config: dict, check: bool) -> None:
         system.stop()
     except RuntimeError as error:
         raise RuntimeError(f"Could not stop Remote Login: {error} Authorised keys have not been changed.") from error
-    system.replace_authorized_keys(home, "")
+    try:
+        system.replace_authorized_keys(home, "")
+    except (RuntimeError, OSError) as error:
+        raise RuntimeError("Remote Login startup and its listener are disabled, but this account's authorised "
+                           f"keys could not be backed up and cleared: {error}") from error
     print("Remote Login startup and its listener are disabled. This account has no authorised SSH keys. "
           "Existing SSH and mosh sessions may remain active. End those sessions separately from the local "
           "console when responding to an incident. Tailscale settings have not been changed. "
@@ -455,8 +475,13 @@ class _System:
         self.config_owner = str(config.get("remote_login_config_owner") or "root")
         self.config_group = str(config.get("remote_login_config_group") or "wheel")
         self.host_key = Path(config.get("remote_login_host_key") or "/etc/ssh/ssh_host_ed25519_key")
-        self.port = int(config.get("remote_login_port") or 22)
-        self.port_timeout = float(config.get("remote_login_port_timeout") or 15)
+        try:
+            self.port = int(config.get("remote_login_port") or 22)
+            self.port_timeout = float(config.get("remote_login_port_timeout") or 15)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(f"remote_login_port and remote_login_port_timeout must be numbers: {error}") from error
+        if not 0 < self.port < 65536 or not 0 < self.port_timeout <= 300:
+            raise RuntimeError("remote_login_port must be 1-65535 and remote_login_port_timeout 0-300 seconds.")
         if not self.config_file.is_absolute() or not self.host_key.is_absolute():
             raise RuntimeError("remote_login_sshd_file and remote_login_host_key must be absolute paths.")
 
@@ -523,14 +548,27 @@ class _System:
             except RuntimeError as error:
                 raise RuntimeError(f"Cannot save the previous {path}: {error}. Nothing was replaced; "
                                    "Remote Login remains disabled.") from error
-        with tempfile.TemporaryDirectory(prefix="remote-login-") as scratch:
+        try:
+            scratch_dir = tempfile.TemporaryDirectory(prefix="remote-login-")
+        except OSError as error:
+            raise RuntimeError(f"Cannot create a private temporary directory: {error}. Nothing was replaced; "
+                               "Remote Login remains disabled.") from error
+        with scratch_dir as scratch:
             candidate = Path(scratch) / "candidate.conf"
-            candidate.write_text(content)
+            installing = False
             try:
+                candidate.write_text(content)
                 self._run(self.sshd + ["-t", "-f", candidate], privileged=True)
+                installing = True
                 self._install(candidate, self.config_owner, self.config_group, "0644")
                 self.check_effective(settings)
             except BaseException as failure:
+                if not installing:
+                    # The managed file was never touched, so leave its inode and metadata alone.
+                    raise RuntimeError(
+                        f"Remote Login remains disabled and {path} was not changed: the candidate configuration "
+                        "was rejected before deployment. Fix the configuration and run remote-login again from "
+                        f"the local console. Original failure: {failure}") from failure
                 try:
                     if previous is None:
                         self._run(["/bin/rm", "-f", "--", path], privileged=True)

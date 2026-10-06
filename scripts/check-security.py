@@ -49,7 +49,9 @@ case "$*" in
   "bootout system/com.openssh.sshd")
     if [ "${TEST_REMOTE_STOP_FAIL:-0}" = 1 ]; then echo "bootout refused" >&2; exit 5; fi
     rm -f "$TEST_STATE/running" ;;
-  "enable system/com.openssh.sshd") rm -f "$TEST_STATE/disabled" ;;
+  "enable system/com.openssh.sshd")
+    if [ "${TEST_REMOTE_ENABLE_FAIL:-0}" = 1 ]; then echo "enable: Operation not permitted" >&2; exit 1; fi
+    rm -f "$TEST_STATE/disabled" ;;
   "bootstrap system /System/Library/LaunchDaemons/ssh.plist")
     touch "$TEST_STATE/running"
     if [ "${TEST_REMOTE_BOOTSTRAP_FAIL:-0}" = 1 ]; then echo "bootstrap: Input/output error" >&2; exit 5; fi ;;
@@ -122,7 +124,12 @@ if "-T" in args:
     if os.environ.get("TEST_SSHD_EXTRA_MATCH"):
         err.append("debug3: checking syntax for '" + os.environ["TEST_SSHD_EXTRA_MATCH"] + "'")
     out += ["refuseconnection no", "forcecommand none", "chrootdirectory none", "permittty yes", "maxsessions 10"]
-    out += [line for line in os.environ.get("TEST_SSHD_EXTRA_LINES", "").split(";") if line]
+    # Like real sshd -T, each extra setting replaces the single value printed for its keyword.
+    for extra in [line for line in os.environ.get("TEST_SSHD_EXTRA_LINES", "").split(";") if line]:
+        keyword = extra.split()[0]
+        if keyword != "allowusers":
+            out = [line for line in out if line.split()[0] != keyword]
+        out.append(extra)
     print("\n".join(out))
     print("\n".join(err), file=sys.stderr)
     sys.exit(0)
@@ -143,7 +150,9 @@ if args[:3] == [".", "-read", group]:
         sys.exit(56)
     for attribute in args[3:]:
         values = {"GroupMembership": state["members"], "NestedGroups": list(state["nested"])}.get(attribute, [])
-        if values:
+        if values and os.environ.get("TEST_DSCL_MULTILINE"):
+            print(attribute + ":\n" + "\n".join(" " + value for value in values))
+        elif values:
             print(attribute + ": " + " ".join(values))
         else:
             print("No such key: " + attribute, file=sys.stderr)
@@ -177,10 +186,12 @@ elif args[:2] == ["-o", "edit"] and state["exists"]:
         name = args[args.index("-a") + 1]
         state["members"] += [] if name in state["members"] else [name]
     elif "-d" in args and kind == "user":
-        state["members"].remove(args[args.index("-d") + 1])
+        if not os.environ.get("TEST_DSEDITGROUP_IGNORE_DELETE"):
+            state["members"].remove(args[args.index("-d") + 1])
     elif "-d" in args and kind == "group":
         name = args[args.index("-d") + 1]
-        state["nested"] = {guid: group for guid, group in state["nested"].items() if group != name}
+        if not os.environ.get("TEST_DSEDITGROUP_IGNORE_DELETE"):
+            state["nested"] = {guid: group for guid, group in state["nested"].items() if group != name}
     else:
         sys.exit(99)
 else:
@@ -360,6 +371,21 @@ with tempfile.TemporaryDirectory() as directory:
     assert len(list(backups.iterdir())) == 3
     print("PASS: managed SSH keeps unique successive backups, profile keys, private modes and Linux agent forwarding")
 
+    broken_home = fixture / "broken-home"
+    (broken_home / ".ssh").mkdir(parents=True)
+    (broken_home / ".ssh/config").write_text("# original SSH config\n")
+    (broken_home / ".dev-setup-backups").write_text("not a directory\n")
+    fails(invoke("ssh", manage_ssh_config=True, home=str(broken_home)), "Could not back up",
+          "No managed SSH file was changed")
+    assert (broken_home / ".ssh/config").read_text() == "# original SSH config\n"
+    (broken_home / ".dev-setup-backups").unlink()
+    (broken_home / ".ssh/config").unlink()
+    (broken_home / ".ssh/config").mkdir()
+    fails(invoke("ssh", manage_ssh_config=True, home=str(broken_home)), "may be incomplete",
+          "The previous files are in")
+    assert len(list((broken_home / ".dev-setup-backups").glob("*/ssh/config"))) == 1
+    print("PASS: managed SSH backup and write failures are reported with the backup location")
+
     # Remote Login.
     authorized_keys = ssh_dir / "authorized_keys"
     running, disabled, access = state / "running", state / "disabled", state / "access.json"
@@ -367,6 +393,7 @@ with tempfile.TemporaryDirectory() as directory:
     original_config = "# Administrator policy before setup\nDenyUsers *\n"
 
     def reset(service_running=True, service_disabled=False, config_text=original_config):
+        authorized_keys.unlink(missing_ok=True)
         authorized_keys.write_text(old_keys)
         authorized_keys.chmod(0o600)
         if service_running:
@@ -456,6 +483,16 @@ with tempfile.TemporaryDirectory() as directory:
     assert not any(line.startswith("sshd") for line in logged())
     print("PASS: a listener stop failure prevents configuration validation and writes")
 
+    reset()
+    fails(invoke("remote-login", env={"TEST_SUDO_STATUS": "1"}, **enable), "Sudo authorization failed")
+    unchanged()
+    assert not any(line.startswith(("launchctl", "sshd", "dseditgroup")) for line in logged())
+    for value in ("not-a-port", 70000):
+        fails(invoke("remote-login", remote_login_port=value, **enable), "remote_login_port")
+        unchanged()
+        assert not any(line.startswith(("sudo", "launchctl")) for line in logged())
+    print("PASS: refused sudo authorization and invalid numeric settings stop before any service change")
+
     for kind in ("symlink", "directory"):
         reset(config_text=None)
         if kind == "symlink":
@@ -471,14 +508,26 @@ with tempfile.TemporaryDirectory() as directory:
         index("launchctl bootout")
     print("PASS: symbolic-link or non-regular managed configuration is refused after stopping, without writes")
 
+    blocking = "can stop your account"
+    limits = "would not apply the Remote Login limits"
     gate_failures = [({"TEST_SSHD_EXTRA_MATCH": "Match Address 192.0.2.0/24"}, "another file adds a Match block"),
-                     ({"TEST_SSHD_EXTRA_LINES": "denyusers someone"}, "DenyUsers"),
-                     ({"TEST_SSHD_EXTRA_LINES": "passwordauthentication yes;allowusers *"},
-                      "would not apply the Remote Login limits"),
+                     ({"TEST_SSHD_EXTRA_LINES": "passwordauthentication yes;allowusers *"}, limits),
+                     ({"TEST_SSHD_EXTRA_LINES": "authorizedkeyscommand /usr/bin/false"}, limits),
+                     ({"TEST_SSHD_EXTRA_LINES": "trustedusercakeys /etc/ssh/ca.pub"}, limits),
+                     ({"TEST_SSHD_EXTRA_LINES": "setenv LANG=C"}, limits),
+                     ({"TEST_SSHD_EXTRA_LINES": "denyusers someone"}, blocking),
+                     ({"TEST_SSHD_EXTRA_LINES": "denygroups staff"}, blocking),
+                     ({"TEST_SSHD_EXTRA_LINES": "allowgroups staff"}, blocking),
+                     ({"TEST_SSHD_EXTRA_LINES": "refuseconnection yes"}, blocking),
+                     ({"TEST_SSHD_EXTRA_LINES": "forcecommand /usr/bin/true"}, blocking),
+                     ({"TEST_SSHD_EXTRA_LINES": "chrootdirectory /var/empty"}, blocking),
+                     ({"TEST_SSHD_EXTRA_LINES": "permittty no"}, blocking),
+                     ({"TEST_SSHD_EXTRA_LINES": "maxsessions 0"}, blocking),
                      ({"TEST_SSHD_SYNTAX_FAIL": "1"}, "Bad configuration option")]
     for env, message in gate_failures:
         for existed in (True, False):
             reset(config_text=original_config if existed else None)
+            before = managed.stat() if existed else None
             fails(invoke("remote-login", env=env, **enable), "Remote Login remains disabled",
                   "Original failure", message)
             assert disabled.exists() and not running.exists()
@@ -487,6 +536,12 @@ with tempfile.TemporaryDirectory() as directory:
                 assert managed.stat().st_uid == os.getuid()
             else:
                 assert not managed.exists(), "Rejected first-install configuration was left behind"
+            if "TEST_SSHD_SYNTAX_FAIL" in env:
+                # A candidate rejected before deployment must not touch the managed file at all.
+                assert not any(line.startswith(("sudo /usr/bin/install", "sudo /bin/rm")) for line in logged())
+                if existed:
+                    after = managed.stat()
+                    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
             assert authorized_keys.read_text() == old_keys, "Keys were replaced before the gate passed"
             assert json.loads(access.read_text())["members"] == [USER, "intruder"]
             assert not any(line.startswith(("launchctl enable", "launchctl bootstrap", "dseditgroup"))
@@ -516,7 +571,8 @@ with tempfile.TemporaryDirectory() as directory:
     assert json.loads(access.read_text()) == {"exists": True, "members": [USER], "nested": {}}
     assert running.exists() and not disabled.exists()
     assert index("tailscale") < index("sudo -v") == index("sudo ") < index("launchctl")
-    assert index("launchctl bootout") < index("sshd") and index("sshd -T", last=True) < index("dseditgroup")
+    assert index("launchctl bootout") < index("sudo /bin/cat") < index("sshd"), "Snapshot taken before stop"
+    assert index("sshd -T", last=True) < index("dseditgroup")
     assert index("dseditgroup", last=True) < index("launchctl enable") < index("launchctl bootstrap")
     assert not any(line.startswith("forbidden") for line in logged())
     for tool in (launchctl, fake_sshd, "/usr/bin/install", "/bin/cat"):
@@ -531,6 +587,44 @@ with tempfile.TemporaryDirectory() as directory:
     assert not list(backups.glob(f"*/remote-login-{second_digest}")), "Unchanged keys were backed up again"
     assert not any(line.startswith("dseditgroup") for line in logged()), "A correct access list was edited"
     print("PASS: a repeated enablement keeps unchanged keys and access lists without extra backups or edits")
+
+    def failed_closed():
+        assert disabled.exists() and not running.exists()
+        assert not any(line.startswith(("launchctl enable", "launchctl bootstrap")) for line in logged())
+
+    reset()
+    fails(invoke("remote-login", env={"TEST_DSEDITGROUP_IGNORE_DELETE": "1"}, **enable),
+          "Remote Login remains disabled", "could not be limited")
+    failed_closed()
+    reset()
+    authorized_keys.unlink()
+    (fixture / "keys-target").write_text(old_keys)
+    authorized_keys.symlink_to(fixture / "keys-target")
+    fails(invoke("remote-login", **enable), "Remote Login remains disabled", "absent or a regular file")
+    failed_closed()
+    assert authorized_keys.is_symlink() and (fixture / "keys-target").read_text() == old_keys
+    reset()
+    backups.rename(fixture / "backups-aside")
+    backups.write_text("not a directory\n")
+    fails(invoke("remote-login", **enable), "Remote Login remains disabled", "could not be updated")
+    failed_closed()
+    assert authorized_keys.read_text() == old_keys
+    reset()
+    fails(invoke("remote-login-revoke", revoke_remote_login=True),
+          "listener are disabled, but this account's authorised keys could not be backed up and cleared")
+    assert disabled.exists() and not running.exists() and authorized_keys.read_text() == old_keys
+    backups.unlink()
+    (fixture / "backups-aside").rename(backups)
+    reset()
+    fails(invoke("remote-login", env={"TEST_REMOTE_ENABLE_FAIL": "1"}, **enable),
+          "activation failed and it has been disabled again", "enable: Operation not permitted")
+    assert disabled.exists() and not running.exists()
+    assert not any(line.startswith("launchctl bootstrap") for line in logged())
+    reset()
+    succeeds(invoke("remote-login", env={"TEST_DSCL_MULTILINE": "1"}, **enable))
+    assert json.loads(access.read_text()) == {"exists": True, "members": [USER], "nested": {}}
+    print("PASS: post-gate key, access-list and enable failures leave Remote Login disabled; multi-line dscl "
+          "output is handled")
 
     activation_failures = [({"TEST_REMOTE_BOOTSTRAP_FAIL": "1"}, {}, "bootstrap: Input/output error"),
                            ({}, {"remote_login_port": closed_port, "remote_login_port_timeout": 0.5},
@@ -581,19 +675,27 @@ with tempfile.TemporaryDirectory() as directory:
             "AuthorizedKeysFile .ssh/authorized_keys .ssh/extra_keys\nSetEnv LANG=C\n")
         (dropins / "100-later.conf").write_text("KbdInteractiveAuthentication yes\nAllowUsers " + USER + "\n")
         include = f"Include {dropins}/*\n"
+        probe = main.parent / "probe_config"
+        probe.write_text("RefuseConnection no\n")
+        refuse_supported = subprocess.run(
+            [str(sshd), "-t", "-f", str(probe), "-h", str(host_keys / "ssh_host_ed25519_key")],
+            capture_output=True).returncode == 0
+        blocking = "can stop your account"
         cases = [("weaker global settings", include, None),
                  ("another Match block", include + "Match Address 192.168.0.0/16\n    AllowUsers *\n",
                   "another file adds a Match block"),
                  ("managed file not read", "PasswordAuthentication no\n", "does not read"),
-                 ("a rule that can block the account", include + f"DenyUsers {USER}\n", "DenyUsers"),
-                 ("a setting that refuses every connection", include + "RefuseConnection yes\n", None)]
+                 ("a rule that can block the account", include + f"DenyUsers {USER}\n", blocking),
+                 ("a group allow list", include + "AllowGroups staff\n", blocking),
+                 ("a forced command", include + "ForceCommand /usr/bin/true\n", blocking),
+                 ("no terminal", include + "PermitTTY no\n", blocking),
+                 ("a setting that refuses every connection", include + "RefuseConnection yes\n",
+                  blocking if refuse_supported else "Remote Login remains disabled")]
         for name, text, message in cases:
             main.write_text(text)
             reset()
             result = invoke("remote-login", **enable, **real)
-            if name == "a setting that refuses every connection":
-                fails(result, "Remote Login remains disabled")
-            elif message:
+            if message:
                 fails(result, "Remote Login remains disabled", message)
             else:
                 succeeds(result)
@@ -610,6 +712,7 @@ with tempfile.TemporaryDirectory() as directory:
             assert managed.read_text() == original_config and disabled.exists() and not running.exists(), name
             assert authorized_keys.read_text() == old_keys, name
         print("PASS: the real sshd gate accepts the managed limits over weaker files and refuses other Match "
-              "blocks, unread files and account-blocking settings")
+              "blocks, unread files and account-blocking settings"
+              + ("" if refuse_supported else "; this sshd does not support RefuseConnection"))
     else:
         print("SKIP: the real sshd gate needs /usr/sbin/sshd")
