@@ -290,8 +290,8 @@ def _checkout(repo: str, dest: Path, version: str) -> None:
     """Clone or update a Git checkout without discarding local work.
 
     Tracked modifications stop the run. Branches only fast-forward. A tag or
-    commit is checked out detached in a new clone; an existing checkout that
-    already contains it is left where it is, so pinning never rewinds it.
+    commit selects that exact revision, without moving existing branch refs.
+    Refuse to leave detached commits that no branch or tag preserves.
     """
     env = dict(os.environ)
     env.setdefault("GIT_SSH_COMMAND", "ssh -o StrictHostKeyChecking=accept-new")
@@ -309,6 +309,17 @@ def _checkout(repo: str, dest: Path, version: str) -> None:
 
     remote_branch = subprocess.run(["git", "-C", str(dest), "show-ref", "--verify", "--quiet",
                                     f"refs/remotes/origin/{version}"]).returncode == 0
+    target = f"refs/remotes/origin/{version}" if remote_branch else version
+    commit = _run([*git_in, "rev-parse", "--verify", f"{target}^{{commit}}"], capture=True).stdout.strip()
+    current_commit = _run([*git_in, "rev-parse", "HEAD"], capture=True).stdout.strip()
+    detached = subprocess.run(["git", "-C", str(dest), "symbolic-ref", "-q", "HEAD"],
+                              stdout=subprocess.DEVNULL).returncode != 0
+    if detached and current_commit != commit:
+        containing_refs = _run([*git_in, "for-each-ref", "--contains", "HEAD",
+                                "--format=%(refname)"], capture=True).stdout.strip()
+        if not containing_refs:
+            raise RuntimeError(f"{dest} has detached commits that no branch or tag preserves. "
+                               "Put them on a branch before selecting another revision.")
     if remote_branch:
         current = _run([*git_in, "rev-parse", "--abbrev-ref", "HEAD"], capture=True).stdout.strip()
         if current != version:
@@ -318,18 +329,8 @@ def _checkout(repo: str, dest: Path, version: str) -> None:
         except RuntimeError as error:
             raise RuntimeError(f"{dest} branch {version} has diverged from origin. "
                                "Reconcile it manually; setup never resets local commits.") from error
-    else:
-        commit = _run([*git_in, "rev-parse", "--verify", f"{version}^{{commit}}"], capture=True).stdout.strip()
-        contained = subprocess.run(["git", "-C", str(dest), "merge-base", "--is-ancestor",
-                                    commit, "HEAD"]).returncode == 0
-        if fresh or not contained:
-            detached = subprocess.run(["git", "-C", str(dest), "symbolic-ref", "-q", "HEAD"],
-                                      stdout=subprocess.DEVNULL).returncode != 0
-            if detached and subprocess.run(["git", "-C", str(dest), "merge-base", "--is-ancestor",
-                                            "HEAD", commit]).returncode != 0:
-                raise RuntimeError(f"{dest} has a detached HEAD with commits outside {version}. "
-                                   "Put them on a branch first.")
-            _run([*git_in, "checkout", "--detach", commit])
+    elif current_commit != commit:
+        _run([*git_in, "checkout", "--detach", commit])
     _run([*git_in, "submodule", "update", "--init", "--recursive"], env=env)
 
 

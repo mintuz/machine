@@ -27,6 +27,13 @@ MAC_PATH_KEYS = ("remote_login_sshd_file", "tailscale_cli")
 PATH_KEYS = ("shell_path", "pnpm_home", "brew_prefix") + MAC_PATH_KEYS
 # Detected per run; a settings file cannot replace them.
 DETECTED_KEYS = ("home", "repo_dir", "platform", "user", "mise")
+# These substitutions belong to isolated direct module tests, not user settings.
+# Keep the existing sshd and launchctl overrides available for validation.
+TEST_ONLY_KEYS = (
+    "remote_login_sudo", "remote_login_ssh_keygen", "remote_login_dscl",
+    "remote_login_dseditgroup", "remote_login_host_key", "remote_login_port",
+    "remote_login_port_timeout", "remote_login_config_owner", "remote_login_config_group",
+)
 
 
 class ConfigError(RuntimeError):
@@ -73,7 +80,7 @@ def _read_toml(path: Path) -> dict:
 
 def _layer(settings: dict, platform: str, source: Path) -> dict:
     """Flatten one file: shared keys, then the table for the detected platform."""
-    for key in DETECTED_KEYS + ("machine_type",):
+    for key in DETECTED_KEYS + ("machine_type",) + TEST_ONLY_KEYS:
         if key in settings:
             hint = " Use --profile or 'profile' instead." if key == "machine_type" else ""
             raise ConfigError(f"{source}: '{key}' cannot be set in a settings file.{hint}")
@@ -81,7 +88,7 @@ def _layer(settings: dict, platform: str, source: Path) -> dict:
     table = settings.get(platform, {})
     if not isinstance(table, dict):
         raise ConfigError(f"{source}: [{platform}] must be a table.")
-    for key in DETECTED_KEYS + ("profile",):
+    for key in DETECTED_KEYS + ("profile", "machine_type") + TEST_ONLY_KEYS:
         if key in table:
             raise ConfigError(f"{source}: '{key}' cannot be set in [{platform}].")
     merged.update(table)

@@ -29,7 +29,17 @@ for argument in "$@"; do
     *) usage ;;
   esac
 done
-profile="${profile:-personal}"
+if [[ -n "${DEVSETUP_PROFILE:-}" ]]; then
+  case "$DEVSETUP_PROFILE" in
+    personal|work) ;;
+    *) echo "DEVSETUP_PROFILE must be personal or work." >&2; exit 64 ;;
+  esac
+  if [[ -n "$profile" && "$profile" != --bootstrap-only && "$profile" != "$DEVSETUP_PROFILE" ]]; then
+    echo "The requested profile conflicts with DEVSETUP_PROFILE." >&2
+    exit 64
+  fi
+fi
+profile="${profile:-${DEVSETUP_PROFILE:-personal}}"
 
 if [[ $EUID -eq 0 ]]; then
   echo "Run setup as your normal user with sudo access, not root." >&2
@@ -114,7 +124,9 @@ source "$repo_dir/scripts/bootstrap-$platform.sh"
 source "$repo_dir/scripts/bootstrap-mise.sh"
 
 if [[ "$use_1password" == true ]]; then ssh_flag=--1password-ssh; else ssh_flag=--keep-ssh; fi
-"$python_bin" "$repo_dir/scripts/setup.py" bootstrap --mise "$mise_bin" "$ssh_flag"
+bootstrap_profile="$profile"
+if [[ "$bootstrap_profile" == --bootstrap-only ]]; then bootstrap_profile="${DEVSETUP_PROFILE:-personal}"; fi
+"$python_bin" "$repo_dir/scripts/setup.py" bootstrap --profile "$bootstrap_profile" --mise "$mise_bin" "$ssh_flag"
 
 if [[ "$profile" != --bootstrap-only ]]; then
   if [[ "$install_dotfiles" == true ]]; then dotfiles_flag=--dotfiles; else dotfiles_flag=--skip-dotfiles; fi

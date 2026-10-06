@@ -8,6 +8,13 @@ if [[ $# -eq 0 ]]; then
   exit 64
 fi
 
+# A preview must not request credentials before the command sees --check.
+for argument in "$@"; do
+  if [[ "$argument" == "--check" ]]; then
+    exec "$@"
+  fi
+done
+
 tmp_dir=""
 cleanup() {
   if [[ -n "${keepalive_pid:-}" ]]; then
@@ -22,7 +29,8 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if sudo -n -v 2>/dev/null; then
+# A NOPASSWD rule can permit commands while verifypw still rejects sudo -v.
+if sudo -n -v 2>/dev/null || sudo -n true 2>/dev/null; then
   sudo_args=(-n)
 else
   if ! { exec 3<>/dev/tty; } 2>/dev/null; then
@@ -48,7 +56,7 @@ fi
 
 (
   while true; do
-    sudo "${sudo_args[@]}" -v || exit
+    sudo "${sudo_args[@]}" -v 2>/dev/null || sudo "${sudo_args[@]}" true || exit
     sleep "${SUDO_KEEPALIVE_INTERVAL:-10}"
   done
 ) &

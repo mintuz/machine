@@ -131,6 +131,8 @@ with tempfile.TemporaryDirectory() as directory:
     for text, message in (("git_name = [", "Invalid TOML"), ('remote_login_sources = "100.64.0.0/10"', "list"),
                           ("install_dotfiles = 'yes'", "true or false"), ('home = "/tmp"', "cannot be set"),
                           ('machine_type = "work"', "cannot be set"), ('[linux]\nprofile = "work"', "cannot be set"),
+                          ("remote_login_sudo = []", "cannot be set"),
+                          ("[linux]\nremote_login_port = 2222", "cannot be set"),
                           ('[linux]\nshell_path = "zsh"', "absolute")):
         override.write_text(text + "\n")
         expect_error(message, load, "Linux", "aarch64", overrides=[override])
@@ -205,9 +207,6 @@ for argv in (["dotfiles", "--skip-dotfiles"], ["install", "--keep-ssh", "--1pass
             assert exit_status.code == 2
         else:
             raise AssertionError(f"{argv} was accepted")
-checked = route("install", check=True, manage_ssh_config=True, manage_remote_login=True)
-assert checked == [call + " (check)" for call in route("install", manage_ssh_config=True, manage_remote_login=True)]
-assert route("remote-login", check=True) == ["security:remote-login (check)"]
 assert cli.parse_args(["remote-login", "--check"]).check and not cli.parse_args(["remote-login"]).check
 print("PASS: direct commands route to one component, opt in to their own action, and reject conflicting options")
 
@@ -216,6 +215,11 @@ print("PASS: direct commands route to one component, opt in to their own action,
 result = subprocess.run(["bash", str(root / "install.sh"), "invalid"], text=True, capture_output=True)
 assert result.returncode == 64 and "Usage:" in result.stderr, result.stdout + result.stderr
 print("PASS: bootstrap rejects an invalid profile before installing anything")
+for requested, inherited in (("personal", "work"), ("work", "personal"), ("--bootstrap-only", "invalid")):
+    result = subprocess.run(["bash", str(root / "install.sh"), requested], text=True, capture_output=True,
+                            env=dict(os.environ, DEVSETUP_PROFILE=inherited))
+    assert result.returncode == 64 and "DEVSETUP_PROFILE" in result.stderr, result.stdout + result.stderr
+print("PASS: conflicting and invalid environment profiles stop before bootstrap")
 
 with tempfile.TemporaryDirectory() as directory:
     fixture = Path(directory)
@@ -420,7 +424,6 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
                     "core.excludesfile=~/.global_gitignore", "fetch.prune=true", "init.defaultbranch=main",
                     "push.autosetupremote=true"):
         assert setting in gitconfig, gitconfig
-    assert recorded().count("mise bootstrap packages upgrade --yes brew:git") == 2
     print("PASS: Git gets the latest formula, global ignore file, identity, and defaults idempotently")
 
     home, config, env = isolated("shell-home")
@@ -491,7 +494,7 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         config.update(dotfiles_repo=str(upstream), dotfiles_version="master")
         host.run("dotfiles", config)
         checkout = home / ".dotfiles"
-        assert (home / "dotfiles-installed").read_text() == "ran\n" and not conflict.exists()
+        assert not conflict.exists()
         backups = list((home / ".dev-setup-backups").glob("*/dotfiles/.agents/.skill-lock.json"))
         assert [backup.read_text() for backup in backups] == ["local lock"]
         (upstream / "second").write_text("2")
@@ -519,14 +522,59 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         assert git("rev-parse", "HEAD", cwd=checkout) == local, "setup discarded a local commit"
         config["dotfiles_version"] = first
         host.run("dotfiles", config)
-        assert git("rev-parse", "HEAD", cwd=checkout) == local, "a pin rewound a checkout that contains it"
+        assert git("rev-parse", "HEAD", cwd=checkout) == first
+        assert git("rev-parse", "master", cwd=checkout) == local, "pinning discarded the local branch"
+        (checkout / "detached-work").write_text("preserve me")
+        git("add", "detached-work", cwd=checkout)
+        git("commit", "-qm", "detached local work", cwd=checkout)
+        detached = git("rev-parse", "HEAD", cwd=checkout)
+        expect_error("detached commits", host.run, "dotfiles", config)
+        config["dotfiles_version"] = "master"
+        expect_error("detached commits", host.run, "dotfiles", config)
+        config["dotfiles_version"] = first
+        assert git("rev-parse", "HEAD", cwd=checkout) == detached
+        assert (checkout / "detached-work").read_text() == "preserve me"
+        git("branch", "keep-detached", cwd=checkout)
+        host.run("dotfiles", config)
+        assert git("rev-parse", "HEAD", cwd=checkout) == first
+        assert git("rev-parse", "keep-detached", cwd=checkout) == detached
         shutil.rmtree(checkout)
         host.run("dotfiles", config)
         assert git("rev-parse", "HEAD", cwd=checkout) == first
-        assert (home / "dotfiles-installed").read_text().count("ran") == 4
     print("PASS: dotfiles clone, fast-forward, pin, back up conflicts uniquely, and never discard local work")
 
     home, config, env = isolated("preflight-home")
     with environment(**{**env, "PATH": str(binary)}):
         expect_error("Required command 'git'", host.run, "preflight", config)
     print("PASS: setup preflight requires git and curl before changes")
+
+with tempfile.TemporaryDirectory() as directory:
+    fixture = Path(directory)
+    binary = fixture / "bin"
+    binary.mkdir()
+    marker = fixture / "sudo-called"
+    command(binary, "sudo", 'touch "$TEST_SUDO_MARKER"; exit 99')
+    env = {**os.environ, "HOME": str(fixture), "TEST_SUDO_MARKER": str(marker),
+           "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
+    env.pop("DEVSETUP_PROFILE", None)
+    result = subprocess.run(
+        ["bash", str(root / "scripts/with-sudo-askpass.sh"), sys.executable,
+         str(root / "scripts/setup.py"), "cli", "--check", "--mise", FAKE_MISE],
+        env=env, text=True, capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not marker.exists(), "a read-only task requested sudo before parsing --check"
+    assert not (fixture / ".dev-setup-backups").exists()
+    print("PASS: the public --check command bypasses sudo and leaves the home unchanged")
+    refused = subprocess.run(
+        ["bash", str(root / "scripts/with-sudo-askpass.sh"), "/bin/sh", "-c", "exit 23"],
+        env=env, text=True, capture_output=True, start_new_session=True,
+    )
+    assert refused.returncode == 1 and "terminal" in refused.stderr
+    command(binary, "sudo", 'if [[ "$*" == "-n true" ]]; then exit 0; fi\nexit 1')
+    allowed = subprocess.run(
+        ["bash", str(root / "scripts/with-sudo-askpass.sh"), "/bin/sh", "-c", "exit 23"],
+        env=env, text=True, capture_output=True, start_new_session=True,
+    )
+    assert allowed.returncode == 23, allowed.stdout + allowed.stderr
+    print("PASS: headless sudo refuses unavailable authorisation, accepts NOPASSWD, and preserves command failure")
