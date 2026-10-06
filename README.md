@@ -29,6 +29,24 @@ preserves SSH:
 ./install.sh personal --keep-ssh
 ```
 
+On macOS, interactive full setup also asks:
+
+```text
+Configure and enable Remote Login on this Mac? [y/N]
+```
+
+Choose **Yes** only from the Mac's local console, after preparing phone
+public keys, connecting Tailscale, and completing the
+[Remote Login prerequisites](#before-you-start). Setup replaces all
+authorised keys with the listed phone keys. It runs a read-only preflight
+after bootstrap and stops before the setup playbook if preflight fails.
+Keep Shields Up on until setup and the policy/firewall checks succeed.
+
+Enter, No, or end of input leaves existing Remote Login access unchanged;
+it does not revoke access. Ubuntu, bootstrap-only runs, unattended runs,
+and detected SSH sessions do not ask or enable Remote Login.
+You can enable it later with `make remote-login`.
+
 On Ubuntu, full setup also asks `Install your dotfiles? [Y/n]` before
 bootstrap. Press Enter to install or answer No to skip. Without a terminal,
 dotfiles install by default. Use these flags to choose without a prompt:
@@ -172,8 +190,9 @@ Shared preferences live in `defaults.yaml`. OS defaults live in
   `/opt/homebrew` shell path, so successful installation does not establish
   Linux shell compatibility. That requires changes in the external repository.
   The clone task refuses to discard local changes in an existing checkout.
-- `manage_remote_login` defaults to false on macOS. `make remote-login` sets it
-  to true for one run; full setup does not ask about it. Setting it to false
+- `manage_remote_login` defaults to false on macOS. The general installer
+  passes its Remote Login prompt choice explicitly for that run.
+  `make remote-login` also sets it to true for one run. Setting it to false
   does not undo an earlier run. `remote_login_public_keys` lists phone public
   key files in `.ssh/` and must not be empty when enabling access.
   `remote_login_sources` limits the source addresses accepted for SSH logins;

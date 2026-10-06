@@ -45,9 +45,8 @@ See `README.md` for user-facing setup instructions and validation history.
   it does not deploy configuration, validate effective SSH settings, or
   change services or keys. It can run from a remote session.
 - `make remote-login` turns on Remote Login (SSH) for tailnet key logins on
-  macOS. It passes `manage_remote_login=true`; the Mac default is false, and
-  full setup does not prompt for it. Its command wrapper runs the read-only
-  preflight before requesting sudo.
+  macOS. It passes `manage_remote_login=true`; the Mac default is false.
+  Its command wrapper runs the read-only preflight before requesting sudo.
 - `make remote-login-revoke` is a separate Mac-only opt-in. It passes
   `revoke_remote_login=true` with the `remote-login-revoke` tag; the default
   is false. It disables SSH startup/listener and backs up then clears the
@@ -74,6 +73,18 @@ keep the default. Pass the answer as `install_dotfiles` to Ansible.
 `--dotfiles` and `--skip-dotfiles` work on both OSes and skip the prompt.
 Bootstrap-only runs do not ask about or install dotfiles. Tagged Make commands
 use the OS defaults without prompts; direct Ansible runs can override them.
+
+On macOS, interactive full setup asks
+`Configure and enable Remote Login on this Mac? [y/N]` before bootstrap.
+Default to No and pass the choice as `manage_remote_login` to Ansible.
+Warn about key replacement, session interruption, phone-key/Tailscale
+prerequisites, policy/firewall review, Shields Up, and FileVault first.
+Do not offer the prompt in detected SSH sessions. Ubuntu, bootstrap-only,
+unattended, No, Enter, and end-of-input paths leave existing access unchanged;
+none of them revokes it. When selected, run `scripts/remote-login.sh check`
+after bootstrap and before the setup sudo wrapper. A failed preflight stops
+the setup playbook. Keep the choice per run; `make remote-login` remains the
+explicit later enablement path.
 
 Bootstrap runs as the normal user, then invokes `local.yaml` through the sudo
 wrapper. Setup selects the platform and inventories, validates prerequisites,
