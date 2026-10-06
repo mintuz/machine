@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_dir"
+os_release=/etc/os-release
 profile=""
 use_1password=""
 install_dotfiles=""
@@ -38,7 +39,8 @@ fi
 case "$(uname -s)" in
   Darwin) platform=macos ;;
   Linux)
-    source /etc/os-release
+    ID=""
+    source "$os_release"
     if [[ "$ID" != ubuntu ]]; then
       echo "Only Ubuntu is supported on Linux." >&2
       exit 1
@@ -46,6 +48,13 @@ case "$(uname -s)" in
     platform=ubuntu
     ;;
   *) echo "Only macOS and Ubuntu are supported." >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64) ;;
+  *)
+    echo "Only ARM64 machines are supported: Apple silicon Macs (not under Rosetta) and aarch64 Ubuntu." >&2
+    exit 1
+    ;;
 esac
 
 if [[ -z "$use_1password" ]]; then
@@ -87,7 +96,7 @@ if [[ "$platform" == macos && "$profile" != --bootstrap-only ]]; then
     echo "It can interrupt existing sessions. Run only from the Mac's local console."
     echo "First prepare phone public keys, connect Tailscale, and review the firewall and tailnet policy."
     echo "Keep Shields Up on. FileVault pre-unlock SSH is not covered by the key-only limits."
-    echo "See 'Remote access from an iPhone' in README.md. If not ready, choose No and use make remote-login later."
+    echo "See 'Remote access from an iPhone' in README.md. If not ready, choose No and use mise run remote-login later."
     while true; do
       read -r -p "Configure and enable Remote Login on this Mac? [y/N] " answer || break
       case "$answer" in
@@ -99,13 +108,21 @@ if [[ "$platform" == macos && "$profile" != --bootstrap-only ]]; then
   fi
 fi
 
+# OS prerequisites, then the checksummed mise release and the locked Python.
+# bootstrap-mise.sh sets mise_bin and python_bin.
 source "$repo_dir/scripts/bootstrap-$platform.sh"
+source "$repo_dir/scripts/bootstrap-mise.sh"
+
+if [[ "$use_1password" == true ]]; then ssh_flag=--1password-ssh; else ssh_flag=--keep-ssh; fi
+"$python_bin" "$repo_dir/scripts/setup.py" bootstrap --mise "$mise_bin" "$ssh_flag"
 
 if [[ "$profile" != --bootstrap-only ]]; then
+  if [[ "$install_dotfiles" == true ]]; then dotfiles_flag=--dotfiles; else dotfiles_flag=--skip-dotfiles; fi
+  remote_flag=--keep-remote-login
   if [[ "$manage_remote_login" == true ]]; then
-    bash "$repo_dir/scripts/remote-login.sh" check "$profile"
+    "$python_bin" "$repo_dir/scripts/setup.py" remote-login-check --profile "$profile" --mise "$mise_bin"
+    remote_flag=--remote-login
   fi
-  exec "$repo_dir/scripts/with-sudo-askpass.sh" ansible-playbook local.yaml \
-    -e "machine_type=$profile" -e "manage_ssh_config=$use_1password" \
-    -e "install_dotfiles=$install_dotfiles" -e "manage_remote_login=$manage_remote_login"
+  exec "$repo_dir/scripts/with-sudo-askpass.sh" "$python_bin" "$repo_dir/scripts/setup.py" install \
+    --profile "$profile" --mise "$mise_bin" "$ssh_flag" "$dotfiles_flag" "$remote_flag"
 fi

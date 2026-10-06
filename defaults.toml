@@ -1,0 +1,43 @@
+# Shared user preferences. Pass an explicit local TOML file with
+# `--config PATH` to override any key for one run; the profile is never stored
+# here and is chosen per run with `--profile personal|work` (default personal).
+
+git_email = "github@mintuz.com"
+git_name = "Adam Bulmer"
+
+dotfiles_repo = "https://github.com/mintuz/.dotfiles.git"
+dotfiles_version = "master"
+dotfiles_conflict_paths = [".agents/.skill-lock.json"]
+
+personal_public_ssh_key = "personal_github.pub"
+work_public_ssh_key = "work_github.pub"
+
+# Remote Login (`mise run remote-login`, Mac only). List phone public key files
+# from .ssh/. These source limits apply to normal post-unlock SSH, not FileVault unlock.
+remote_login_public_keys = []
+remote_login_sources = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+
+pnpm_global_packages = []
+
+# Per-run choices. install.sh prompts or flags override them for one run;
+# nothing is persisted.
+manage_ssh_config = false
+install_dotfiles = true
+manage_remote_login = false
+revoke_remote_login = false
+
+[mac]
+shell_path = "/bin/zsh"
+ssh_agent_socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+pnpm_home = "~/Library/pnpm"
+brew_prefix = "/opt/homebrew"
+remote_login_sshd_file = "/etc/ssh/sshd_config.d/010-remote-login.conf"
+tailscale_cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+
+[linux]
+shell_path = "/usr/bin/zsh"
+# A forwarded SSH_AUTH_SOCK replaces this with the literal "SSH_AUTH_SOCK" so the
+# session-specific socket path is never saved.
+ssh_agent_socket = "~/.1password/agent.sock"
+pnpm_home = "~/.local/share/pnpm"
+brew_prefix = "/home/linuxbrew/.linuxbrew"

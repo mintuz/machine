@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Run COMMAND with sudo authorised once and kept alive. Helpers call sudo per
+# operation (sudo -A when SUDO_ASKPASS is set); the password file is removed on exit.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
@@ -40,11 +42,9 @@ else
   printf '#!/usr/bin/env bash\ncat %q\n' "$password_file" > "$askpass_file"
   chmod 700 "$askpass_file"
   export SUDO_ASKPASS="$askpass_file"
-  export ANSIBLE_BECOME_PASSWORD_FILE="$askpass_file"
   sudo_args=(-A)
   sudo "${sudo_args[@]}" -v
 fi
-export ANSIBLE_BECOME_ASK_PASS=false
 
 (
   while true; do

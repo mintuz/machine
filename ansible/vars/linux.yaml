@@ -1,7 +1,0 @@
-# Headless Ubuntu keeps its existing SSH agent and configuration.
-manage_ssh_config: false
-# Resolve a forwarded socket per session instead of saving its temporary path.
-ssh_agent_socket: "{{ 'SSH_AUTH_SOCK' if ansible_facts['env'].get('SSH_AUTH_SOCK', '') else '~/.1password/agent.sock' }}"
-install_dotfiles: true
-pnpm_home: "{{ ansible_facts['env']['HOME'] }}/.local/share/pnpm"
-shell_path: /usr/bin/zsh
