@@ -6,6 +6,7 @@ replaced by logging stand-ins in temporary directories.
 """
 import contextlib
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -26,9 +27,30 @@ for pattern in $FAKE_FAIL; do
 done
 exit 0
 """
+# The selected mise Node is the path in $FAKE_NODE_FILE. Installing or upgrading
+# Node switches it to $FAKE_NODE_AFTER when that is set.
 MISE_EXTRA = """case "$*" in
-  *"node -p process.execPath"*) printf '%s\\n' "$FAKE_NODE_PATH"; exit "${FAKE_NODE_STATUS:-0}" ;;
+  *"node -p process.execPath"*) [ -s "$FAKE_NODE_FILE" ] || exit 1; cat "$FAKE_NODE_FILE"; exit 0 ;;
+  "ls --installed --json node") printf '%s\\n' "${FAKE_NODE_INSTALLS:-[]}"; exit 0 ;;
+  install*node*|upgrade*node*) [ -z "$FAKE_NODE_AFTER" ] || printf '%s\\n' "$FAKE_NODE_AFTER" > "$FAKE_NODE_FILE" ;;
 esac"""
+# npm inside a fake Node runtime: its global root is the runtime's own
+# lib/node_modules unless $FAKE_NPM_PREFIX is set, and install -g creates the package.
+FAKE_NPM = """#!/bin/sh
+runtime="$(cd "$(dirname "$0")/.." && pwd)"
+root="${FAKE_NPM_PREFIX:-$runtime/lib/node_modules}"
+line="npm[$(basename "$runtime")] $*"
+printf '%s\\n' "$line" >> "$FAKE_LOG"
+IFS='|'
+for pattern in $FAKE_FAIL; do
+  case "$line" in *"$pattern"*) exit 1 ;; esac
+done
+case "$1" in
+  root) printf '%s\\n' "$root" ;;
+  install) name="${3%@*}"; mkdir -p "$root/$name"
+           printf '{"version": "%s"}\\n' "${3##*@}" > "$root/$name/package.json" ;;
+esac
+"""
 OLLAMA_EXTRA = """if [ "$1" = list ]; then printf 'NAME ID SIZE\\nfirst:latest a 1\\nsecond:latest b 2\\n'; exit 0; fi"""
 SUDO_EXTRA = """[ "$1" = -A ] && shift
 "$@"; exit $?"""
@@ -71,8 +93,27 @@ class Machine:
         }
         self.env = {"PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin", "FAKE_LOG": str(self.log),
                     "FAKE_FAIL": "", "MISE_CONFIG_DIR": str(self.home / ".config/mise"),
-                    "FAKE_NODE_PATH": str(self.home / ".local/share/mise/installs/node/24/bin/node")}
+                    "FAKE_NODE_FILE": str(self.base / "node-path")}
         self.fragment = self.home / ".config/mise/conf.d/dev-machine-setup.toml"
+        self.active_bin = self.runtime("24.0.0")
+        self.select_node(self.active_bin)
+
+    def runtime(self, version, packages=None):
+        """A fake mise Node install with npm globals {name: version}; returns its bin dir."""
+        path = self.home / ".local/share/mise/installs/node" / version
+        fake_npm = write(path / "bin/npm", FAKE_NPM)
+        fake_npm.chmod(0o755)
+        globals_root = path / "lib/node_modules"
+        globals_root.mkdir(parents=True, exist_ok=True)
+        for name, package_version in (packages or {}).items():
+            write(globals_root / name / "package.json", f'{{"version": "{package_version}"}}')
+        return path / "bin"
+
+    def select_node(self, bin_dir):
+        (self.base / "node-path").write_text(f"{bin_dir}/node\n" if bin_dir else "")
+
+    def node_globals(self, bin_dir):
+        return software._npm_globals(bin_dir.parent / "lib/node_modules")
 
     def run(self, action, check=False, **env):
         saved = dict(os.environ)
@@ -224,9 +265,10 @@ with tempfile.TemporaryDirectory() as directory:
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, "linux", repo=fixture_repo(directory, CLI_REPO))
     machine.run("cli")
-    assert machine.calls()[:3] == ["mise bootstrap packages apply --yes brew:git",
-                                   "mise bootstrap packages upgrade --yes brew:git",
-                                   "mise install node@lts pnpm@latest aqua:openai/codex@latest"]
+    calls = [call for call in machine.calls() if call.startswith(("mise bootstrap", "mise install"))]
+    assert calls[:3] == ["mise bootstrap packages apply --yes brew:git",
+                         "mise bootstrap packages upgrade --yes brew:git",
+                         "mise install node@lts pnpm@latest aqua:openai/codex@latest"]
 for brew in (True, False):
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), brew=brew)
@@ -294,13 +336,13 @@ for platform in ("mac", "linux"):
         write(machine.home / ".bashrc", "alias keep=1\n" + nvm_block)
         dotfiles_zshrc = write(machine.base / "dotfiles/.zshrc", "# dotfiles\n")
         (machine.home / ".zshrc").symlink_to(dotfiles_zshrc)
-        write(machine.home / ".nvm/versions/node/v22/lib/node_modules/eslint/package.json", "{}")
-        write(machine.home / ".nvm/versions/node/v22/lib/node_modules/npm/package.json", "{}")
 
         fails(lambda: machine.run("node", FAKE_FAIL="mise install node"), "Installing Node and pnpm")
         assert "node" not in machine.tools() and "brew unlink node" not in machine.calls()
         assert "nvm.sh" in (machine.home / ".bashrc").read_text()
-        fails(lambda: machine.run("node", FAKE_NODE_PATH=str(machine.prefix / "bin/node")), "did not run")
+        machine.select_node(machine.prefix / "bin")
+        fails(lambda: machine.run("node"), "did not run")
+        machine.select_node(machine.active_bin)
         assert "node" not in machine.tools() and "brew unlink node" not in machine.calls()
 
         machine.log.write_text("")
@@ -318,9 +360,47 @@ for platform in ("mac", "linux"):
             assert f"export PNPM_HOME={machine.home}/pnpm" in bashrc and bashrc.count("# BEGIN") == 1
         else:
             assert "nvm.sh" in bashrc
-        output = machine.run("node")
-        assert "Node runtime: eslint\n" in output, output
 print("PASS: Node is proven before Homebrew node is unlinked; failures stop setup; config and dotfiles untouched")
+
+# D2: npm globals from nvm's default Node and Homebrew node move to the mise Node.
+for fail in (False, True):
+    with tempfile.TemporaryDirectory() as directory:
+        machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), brew=True)
+        (machine.prefix / "var/homebrew/linked/node").mkdir(parents=True)
+        (machine.prefix / "Cellar/node/25.0.0").mkdir(parents=True)
+        nvm = machine.home / ".nvm"
+        write(nvm / "alias/default", "lts/*\n")
+        write(nvm / "alias/lts/*", "lts/jod\n")
+        write(nvm / "alias/lts/jod", "v20.1.0\n")
+        for version, packages in (("v20.1.0", {"eslint": "8.0.0", "@scope/tool": "1.2.0", "npm": "10.0.0"}),
+                                  ("v22.3.0", {"prettier": "3.0.0"})):
+            for name, package_version in packages.items():
+                write(nvm / "versions/node" / version / "lib/node_modules" / name / "package.json",
+                      f'{{"version": "{package_version}"}}')
+        linked = write(machine.base / "work/mylink/package.json", '{"version": "0.1.0"}').parent
+        (nvm / "versions/node/v20.1.0/lib/node_modules/mylink").symlink_to(linked)
+        for name, package_version in (("eslint", "7.0.0"), ("typescript", "5.0.0")):
+            write(machine.prefix / "lib/node_modules" / name / "package.json", f'{{"version": "{package_version}"}}')
+        machine.runtime("24.0.0", {"existing": "1.0.0"})
+        legacy = snapshot(nvm), snapshot(machine.prefix / "lib")
+        if fail:
+            error = fails(lambda: machine.run("node", FAKE_FAIL="install -g @scope/tool"), "@scope/tool@1.2.0")
+            output = error.output
+            assert "brew unlink node" not in machine.calls() and not machine.fragment.exists()
+        else:
+            output = machine.run("node")
+            calls = machine.calls()
+            assert calls.index("npm[24.0.0] install -g eslint@8.0.0") < calls.index("brew unlink node")
+            assert machine.node_globals(machine.active_bin) == {
+                "@scope/tool": "1.2.0", "eslint": "8.0.0", "existing": "1.0.0", "typescript": "5.0.0"}
+            assert machine.tools()["node"] == "lts"
+        assert (snapshot(nvm), snapshot(machine.prefix / "lib")) == legacy, "Legacy runtimes were changed"
+        assert "nvm v20.1.0 (default alias default -> lts/* -> lts/jod -> v20.1.0)" in output, output
+        assert "using 8.0.0 from nvm v20.1.0" in output and "not 7.0.0 from Homebrew node" in output
+        assert "other nvm versions are not moved: v22.3.0" in output
+        assert "Not moving npm global mylink" in output
+print("PASS: npm globals move from nvm's default and Homebrew node at their versions; "
+      "a failed move keeps Homebrew node linked")
 
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
@@ -352,7 +432,7 @@ for status in ("ok", "fail"):
             output = error.output
         calls = machine.calls()
         for command in ("brew update", "brew upgrade --formula", "brew upgrade --cask", "brew cleanup -s",
-                        "mise upgrade node pnpm", "mise exec -- pnpm update -g", "mas upgrade"):
+                        "mise upgrade --no-prune node pnpm", "mise exec -- pnpm update -g", "mas upgrade"):
             assert command in calls, (command, calls)
         native = next(call for call in calls if call.startswith("mise bootstrap packages upgrade"))
         assert native == "mise bootstrap packages upgrade --yes brew-cask:bad brew-cask:codex brew-cask:fresh"
@@ -361,3 +441,45 @@ for status in ("ok", "fail"):
                          else ["ollama pull first:latest", "ollama pull second:latest"])
         assert "pnpm globals: completed" in output and "Mac App Store: completed" in output
 print("PASS: updates skip missing components, keep going after failures, and report them at the end")
+
+# D3: a Node upgrade keeps the old runtime and moves its npm globals to the new one.
+for case in ("moved", "unprobed", "failed", "shared prefix"):
+    with tempfile.TemporaryDirectory() as directory:
+        machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), brew=True)
+        write(machine.fragment, '[tools]\nnode = "lts"\npnpm = "latest"\n')
+        (machine.prefix / "var/homebrew/linked/node").mkdir(parents=True)
+        old_bin = machine.runtime("24.0.0", {"cli-a": "1.0.0"})
+        new_bin = machine.runtime("24.1.0")
+        env = {"FAKE_NODE_AFTER": f"{new_bin}/node"}
+        if case == "unprobed":
+            machine.select_node(None)
+            env["FAKE_NODE_INSTALLS"] = json.dumps(
+                [{"version": version, "install_path": str(bin_dir.parent)}
+                 for version, bin_dir in (("24.0.0", old_bin), ("22.0.0", machine.runtime("22.0.0")))])
+        if case == "shared prefix":
+            env["FAKE_NPM_PREFIX"] = str(machine.base / "npm-global")
+        if case == "failed":
+            error = fails(lambda: machine.run("update", FAKE_FAIL="install -g cli-a", **env),
+                          "Update failures: npm global transfer")
+            output = error.output
+            assert "brew unlink node" not in machine.calls()
+            assert [call for call in machine.calls() if call.startswith("ollama pull")] == [
+                "ollama pull first:latest", "ollama pull second:latest"]
+        else:
+            output = machine.run("update", **env)
+        calls = machine.calls()
+        assert "mise upgrade --no-prune node pnpm" in calls
+        assert machine.node_globals(old_bin) == {"cli-a": "1.0.0"}, "The old runtime lost its globals"
+        installs = [call for call in calls if " install -g " in call]
+        if case == "shared prefix":
+            assert installs == [] and "npm global transfer: completed" in output
+        else:
+            assert installs == ["npm[24.1.0] install -g cli-a@1.0.0"], calls
+            assert "previous mise Node 24.0.0" in output, output
+        if case in ("moved", "unprobed"):
+            assert machine.node_globals(new_bin) == {"cli-a": "1.0.0"}
+            assert (calls.index(installs[0]) < calls.index("brew unlink node")
+                    < calls.index("mise exec -- npm update -g")), calls
+            assert "npm global transfer: completed" in output
+print("PASS: Node upgrades keep the old runtime, move its npm globals before updating them, "
+      "and report a failed move at the end")

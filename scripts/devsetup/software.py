@@ -323,23 +323,191 @@ def _runtime_entries(config):
     return tools["node"], tools["pnpm"]
 
 
-def _mise_node_path(config, shell, node):
-    """Return the mise-managed Node executable when it runs, otherwise None."""
-    status, output = shell.query([_mise(config), "exec", node.spec, "--",
-                                  "node", "-p", "process.execPath"])
+# Probes must never install a missing Node as a side effect.
+NO_AUTO_INSTALL = {"MISE_AUTO_INSTALL": "0", "MISE_EXEC_AUTO_INSTALL": "0",
+                   "MISE_NOT_FOUND_AUTO_INSTALL": "0"}
+
+
+def _version_key(text):
+    return tuple(int(part) for part in re.findall(r"\d+", text))
+
+
+def _mise_node_path(config, shell, spec):
+    """Return the installed mise Node executable selected by spec, otherwise None."""
+    status, output = shell.query([_mise(config), "exec", spec, "--", "node", "-p", "process.execPath"],
+                                 env=dict(shell.env, **NO_AUTO_INSTALL))
     path = output.strip()
     if status != 0 or not path or path.startswith(str(brew_prefix(config)) + "/"):
         return None
     return path
 
 
-def _retire_brew_node(config, shell, node):
-    """Unlink Homebrew's node only when the mise runtime works, as nvm did before."""
+def _previous_mise_node(config, shell, spec):
+    """The bin directory of the mise Node in use before an install or upgrade.
+
+    That is the installed version spec selects now, or else the newest installed
+    mise Node. Check mode does not probe.
+    """
+    if shell.check:
+        return None
+    path = _mise_node_path(config, shell, spec)
+    if path:
+        return Path(path).parent
+    status, output = shell.query([_mise(config), "ls", "--installed", "--json", "node"],
+                                 env=dict(shell.env, **NO_AUTO_INSTALL))
+    try:
+        installs = json.loads(output) if status == 0 and output.strip() else []
+    except json.JSONDecodeError:
+        installs = []
+    installs = [item for item in installs if isinstance(item, dict) and item.get("install_path")]
+    if not installs:
+        return None
+    newest = max(installs, key=lambda item: _version_key(str(item.get("version", ""))))
+    return Path(newest["install_path"]) / "bin"
+
+
+def _npm_root(shell, bin_dir):
+    """The global node_modules of the Node in bin_dir, honouring the user's npm prefix."""
+    env = dict(shell.env, PATH=os.pathsep.join([str(bin_dir), shell.env["PATH"]]))
+    status, output = shell.query([Path(bin_dir) / "npm", "root", "-g"], env=env)
+    root = output.strip()
+    return Path(root) if status == 0 and root else None
+
+
+def _npm_globals(root):
+    """Map each package in a global node_modules to its version.
+
+    Linked or unreadable packages map to None because they cannot be reinstalled
+    at a known version.
+    """
+    found = {}
+    if not root or not root.is_dir():
+        return found
+    for item in sorted(root.iterdir()):
+        if item.name.startswith("."):
+            continue
+        scoped = item.name.startswith("@") and item.is_dir() and not item.is_symlink()
+        for package in (sorted(item.iterdir()) if scoped else [item]):
+            name = package.relative_to(root).as_posix()
+            if name in ("npm", "corepack"):
+                continue
+            version = None
+            if not package.is_symlink():
+                try:
+                    version = json.loads((package / "package.json").read_text()).get("version")
+                except (OSError, ValueError, AttributeError):
+                    version = None
+            found[name] = version if isinstance(version, str) and version else None
+    return found
+
+
+def _nvm_default(config):
+    """Return (bin dir, description, other versions) for nvm's default Node.
+
+    The default alias is followed through nvm's alias files, for example
+    default -> lts/* -> lts/jod -> v22.1.0. If it does not resolve, the newest
+    installed version is used and the description says so.
+    """
+    nvm = Path(config["home"]) / ".nvm"
+    versions = sorted((path for path in (nvm / "versions/node").glob("v*") if path.is_dir()),
+                      key=lambda path: _version_key(path.name))
+    if not versions:
+        return None, "", []
+    chain, value = [], "default"
+    for _ in range(8):
+        alias = nvm / "alias" / value
+        if not alias.is_file():
+            break
+        value = alias.read_text().strip()
+        chain.append(value)
+    wanted = value.removeprefix("v")
+    if wanted in ("node", "stable"):
+        matches = versions
+    else:
+        matches = [path for path in versions
+                   if path.name[1:] == wanted or path.name[1:].startswith(wanted + ".")]
+    if chain and matches:
+        chosen, how = matches[-1], "default alias " + " -> ".join(["default", *chain])
+    else:
+        chosen, how = versions[-1], "newest installed; the default alias did not resolve"
+    others = [path.name for path in versions if path != chosen]
+    return chosen / "bin", f"nvm {chosen.name} ({how})", others
+
+
+def _transfer_npm_globals(config, shell, previous_bin, active_bin):
+    """Install npm globals from earlier Node runtimes into the active mise Node.
+
+    Sources in precedence order: the previous mise Node, nvm's default Node,
+    then Homebrew node. The first source with a package decides its version,
+    and that exact version is installed. Packages already in the active runtime
+    are left alone, and nothing is removed from the earlier runtimes.
+    Returns the package specs that failed to install.
+    """
+    active_root = _npm_root(shell, active_bin)
+    if not active_root:
+        raise RuntimeError("Could not find the global npm directory of the mise Node runtime.")
+    sources = []
+    if previous_bin and Path(previous_bin).resolve() != Path(active_bin).resolve():
+        root = _npm_root(shell, previous_bin)
+        if root:
+            sources.append((f"previous mise Node {Path(previous_bin).parent.name}", root))
+    nvm_bin, nvm_label, nvm_others = _nvm_default(config)
+    if nvm_bin:
+        sources.append((nvm_label, nvm_bin.parent / "lib/node_modules"))
+    if (brew_prefix(config) / "Cellar/node").is_dir():
+        sources.append(("Homebrew node", brew_prefix(config) / "lib/node_modules"))
+    current = _npm_globals(active_root)
+    chosen = {}
+    for label, root in sources:
+        if root.resolve() == active_root.resolve():
+            continue
+        for name, version in _npm_globals(root).items():
+            if name not in chosen:
+                chosen[name] = (version, label)
+            elif chosen[name][0] != version:
+                print(f"npm global {name}: using {chosen[name][0]} from {chosen[name][1]}, "
+                      f"not {version} from {label}.", flush=True)
+    if nvm_others:
+        print(f"npm globals of other nvm versions are not moved: {', '.join(nvm_others)}", flush=True)
+    env = dict(shell.env, PATH=os.pathsep.join([str(active_bin), shell.env["PATH"]]))
+    failures = []
+    for name, (version, label) in chosen.items():
+        if name in current:
+            continue
+        if version is None:
+            print(f"Not moving npm global {name} from {label}: it is linked or has no readable version.",
+                  flush=True)
+            continue
+        print(f"Moving npm global {name}@{version} from {label} to the mise Node runtime.", flush=True)
+        if shell.run([Path(active_bin) / "npm", "install", "-g", f"{name}@{version}"], env=env) != 0:
+            failures.append(f"{name}@{version}")
+    return failures
+
+
+def _switch_node(config, shell, spec, previous_bin):
+    """Prove the mise Node and move npm globals to it before retiring Homebrew node.
+
+    Raises RuntimeError when the runtime does not run or a package fails to
+    move; earlier runtimes and Homebrew node are then left in place.
+    """
+    if shell.check:
+        print("Moving npm globals to the mise Node runtime: not previewed.", flush=True)
+        return
+    path = _mise_node_path(config, shell, spec)
+    if not path:
+        raise RuntimeError("The mise Node runtime did not run after installation.")
+    print(f"mise Node runtime: {path}", flush=True)
+    failures = _transfer_npm_globals(config, shell, previous_bin, Path(path).parent)
+    if failures:
+        raise RuntimeError(f"npm global packages failed to move to the mise Node runtime: {', '.join(failures)}. "
+                           "Earlier Node runtimes and Homebrew node were left in place.")
+    _retire_brew_node(config, shell)
+
+
+def _retire_brew_node(config, shell):
+    """Unlink Homebrew's node once the mise runtime works and has the npm globals."""
     brew = _brew(config)
     if not brew or not (brew_prefix(config) / "var/homebrew/linked/node").exists():
-        return
-    if not _mise_node_path(config, shell, node):
-        print("Keeping Homebrew node linked: the mise Node runtime is not working yet.", flush=True)
         return
     if shell.run([brew, "unlink", "node"]) != 0:
         print("Could not unlink Homebrew node; mise Node still comes first when activated.", flush=True)
@@ -379,8 +547,12 @@ def _cli(config, shell):
         raise RuntimeError("Required CLI packages failed to install or upgrade. See the output above.")
     tools = [entry for entry in required if entry.is_tool]
     if tools:
+        node = next((entry for entry in tools if entry.key == "node"), None)
+        previous = _previous_mise_node(config, shell, node.spec) if node else None
         if _install_tools(config, shell, tools) != 0:
             raise RuntimeError("Required mise tools failed to install. See the mise output above.")
+        if node:
+            _switch_node(config, shell, node.spec, previous)
         record_tools(config, shell, {entry.key: entry.version for entry in tools})
     failures = []
     for entry in optional:
@@ -391,9 +563,6 @@ def _cli(config, shell):
         elif entry.is_tool:
             record_tools(config, shell, {entry.key: entry.version})
     _report("Optional CLI failures", failures)
-    node = next((entry for entry in tools if entry.key == "node"), None)
-    if node and not shell.check:
-        _retire_brew_node(config, shell, node)
 
 
 def _remove_disabled_tldr(config, shell):
@@ -467,16 +636,11 @@ def _app_store(config, shell):
 
 def _node(config, shell):
     node, pnpm = _runtime_entries(config)
+    previous = _previous_mise_node(config, shell, node.spec)
     if _install_tools(config, shell, [node, pnpm]) != 0:
         raise RuntimeError("Installing Node and pnpm with mise failed.")
-    if not shell.check:
-        path = _mise_node_path(config, shell, node)
-        if not path:
-            raise RuntimeError("The mise Node runtime did not run after installation.")
-        print(f"mise Node runtime: {path}", flush=True)
+    _switch_node(config, shell, node.spec, previous)
     record_tools(config, shell, {node.key: node.version, pnpm.key: pnpm.version})
-    if not shell.check:
-        _retire_brew_node(config, shell, node)
     _write_shell_block(config, shell)
     pnpm_home = Path(config["pnpm_home"])
     if not shell.check:
@@ -487,7 +651,6 @@ def _node(config, shell):
         command = [_mise(config), "exec", node.spec, pnpm.spec, "--", "pnpm", "add", "-g", f"{package}@latest"]
         if shell.run(command, env=env) != 0:
             raise RuntimeError(f"Installing the pnpm global package {package} failed.")
-    _report_nvm_globals(config)
 
 
 def _write_shell_block(config, shell):
@@ -520,20 +683,6 @@ def _write_shell_block(config, shell):
             path.chmod(0o644)
 
 
-def _report_nvm_globals(config):
-    """npm globals under nvm stay with nvm's Node; list them rather than drop them silently."""
-    found = set()
-    for modules in (Path(config["home"]) / ".nvm/versions/node").glob("*/lib/node_modules"):
-        for package in modules.iterdir():
-            names = ([f"{package.name}/{child.name}" for child in package.iterdir()]
-                     if package.name.startswith("@") and package.is_dir() else [package.name])
-            found.update(name for name in names if name not in ("npm", "corepack"))
-    if found:
-        packages = " ".join(sorted(found))
-        print("npm global packages installed under nvm are not on the mise Node runtime: "
-              f"{packages}\nReinstall any you still need with: mise exec -- npm install -g {packages}")
-
-
 def _update(config, shell):
     results = []
 
@@ -550,10 +699,6 @@ def _update(config, shell):
         component("Homebrew metadata", status(shell.run([brew, "update"])))
         component("Homebrew formulae", status(shell.run([brew, "upgrade", "--formula"])))
         component("Homebrew casks", status(shell.run([brew, "upgrade", "--cask"])))
-        node = next((entry for entry in selected_entries(config)
-                     if entry.kind == "cli" and entry.key == "node"), None)
-        if node and not shell.check:
-            _retire_brew_node(config, shell, node)
         component("Homebrew cleanup", status(shell.run([brew, "cleanup", "-s"])))
     else:
         for name in ("Homebrew metadata", "Homebrew formulae", "Homebrew casks", "Homebrew cleanup"):
@@ -571,8 +716,21 @@ def _update(config, shell):
         component("mise bootstrap packages", "skipped")
 
     tools = _fragment_tools(config)
+    node_request = tools.get("node")
+    if isinstance(node_request, dict):
+        node_request = node_request.get("version")
+    node_spec = f"node@{node_request}" if isinstance(node_request, str) else None
     if tools:
-        component("mise tools", status(shell.run([_mise(config), "upgrade", *tools])))
+        previous = _previous_mise_node(config, shell, node_spec) if node_spec else None
+        # Keep the Node being replaced until its npm globals have moved.
+        component("mise tools", status(shell.run([_mise(config), "upgrade", "--no-prune", *tools])))
+        if node_spec:
+            try:
+                _switch_node(config, shell, node_spec, previous)
+                component("npm global transfer", status(0))
+            except RuntimeError as error:
+                print(error, flush=True)
+                component("npm global transfer", "failed")
     else:
         component("mise tools", "skipped")
 
