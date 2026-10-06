@@ -1,0 +1,72 @@
+---
+# Checks the SSH server settings that apply to every connection.
+# remote-login.yaml runs this after it installs the managed settings file and
+# before it turns on Remote Login. Tests set remote_login_sshd to run sshd
+# against a temporary configuration.
+- name: Read the effective SSH server settings
+  ansible.builtin.command:
+    argv: "{{ remote_login_sshd | default(['/usr/sbin/sshd']) + ['-T', '-ddd', '-C', 'user=' ~ ansible_facts['user_id'] ~ ',host=remote-login-check,addr=' ~ item] }}"
+  loop: [100.64.0.1, 192.0.2.1]
+  register: remote_login_effective
+  changed_when: false
+  become: true
+  tags: [install, remote-login]
+
+# sshd logs each file that it reads and each Match line that it parses.
+- name: Check that the managed Match block is the only one
+  ansible.builtin.assert:
+    that:
+      - "('parse_server_config_depth: config ' ~ remote_login_sshd_file ~ ' len ') in item.stderr"
+      - item.stderr | regex_findall("checking syntax for 'Match [^']*'") == ["checking syntax for 'Match all'"]
+    fail_msg: >-
+      The SSH server does not read {{ remote_login_sshd_file }}, or another
+      file adds a Match block. Remote Login needs its own Match block to be the
+      only one. Fix the SSH server configuration, then run make remote-login
+      again.
+    quiet: true
+  loop: "{{ remote_login_effective.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [install, remote-login]
+
+- name: Check that only tailnet key logins are possible
+  ansible.builtin.assert:
+    that:
+      - "'passwordauthentication no' in item.stdout_lines"
+      - "'kbdinteractiveauthentication no' in item.stdout_lines"
+      - "'authenticationmethods publickey' in item.stdout_lines"
+      - "'pubkeyauthentication yes' in item.stdout_lines"
+      - "'authorizedkeysfile .ssh/authorized_keys' in item.stdout_lines"
+      - "'authorizedkeyscommand none' in item.stdout_lines"
+      - "'trustedusercakeys none' in item.stdout_lines"
+      - item.stdout_lines | select('match', 'allowusers ') | list == remote_login_allow_users | map('regex_replace', '^', 'allowusers ') | list
+      - ('PATH=' ~ remote_login_path) in (item.stdout_lines | select('match', 'setenv ') | join(' ') | split(' '))
+    fail_msg: >-
+      The SSH server would not apply the Remote Login limits to connections
+      from {{ item.item }}. Another file in /etc/ssh overrides them. Fix that
+      file, then run make remote-login again.
+    quiet: true
+  loop: "{{ remote_login_effective.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [install, remote-login]
+
+- name: Check that no other setting can block this account
+  ansible.builtin.assert:
+    that:
+      - item.stdout_lines | select('match', '(denyusers|denygroups|allowgroups) ') | list == []
+      - "'refuseconnection no' in item.stdout_lines"
+      - "'forcecommand none' in item.stdout_lines"
+      - "'chrootdirectory none' in item.stdout_lines"
+      - "'permittty yes' in item.stdout_lines"
+      - "'maxsessions 0' not in item.stdout_lines"
+    fail_msg: >-
+      Another file in /etc/ssh sets DenyUsers, DenyGroups, AllowGroups,
+      RefuseConnection, ForceCommand, ChrootDirectory, PermitTTY no, or
+      MaxSessions 0. These settings can stop your account from opening a
+      terminal session. Remove them, then run make remote-login again.
+    quiet: true
+  loop: "{{ remote_login_effective.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [install, remote-login]

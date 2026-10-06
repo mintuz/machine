@@ -1,0 +1,80 @@
+---
+# Read-only prerequisites shared by enablement and make remote-login-check.
+- name: Validate Remote Login inputs
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['user_id'] != 'root'
+      - remote_login_public_keys | default([]) | length > 0
+      - remote_login_sources | default([]) | length > 0
+    fail_msg: >-
+      Run make remote-login as your normal user. In defaults.yaml, list at least
+      one phone public key file from .ssh/ in remote_login_public_keys and at
+      least one address range in remote_login_sources.
+    quiet: true
+  tags: [install, remote-login]
+
+- name: Refuse private keys in the phone key list
+  ansible.builtin.assert:
+    that: lookup('ansible.builtin.file', playbook_dir ~ '/.ssh/' ~ item) is not search('PRIVATE KEY')
+    fail_msg: "{{ item }} contains a private key. Keep only public keys in .ssh/."
+    quiet: true
+  loop: "{{ remote_login_public_keys }}"
+  tags: [install, remote-login]
+
+- name: Check that each phone key file holds one plain public key
+  ansible.builtin.assert:
+    that:
+      - remote_login_key_lines | length == 1
+      - remote_login_key_lines[0] is match('(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh[.]com|sk-ecdsa-sha2-nistp256@openssh[.]com) [A-Za-z0-9+/]+=*( .*)?$')
+    fail_msg: >-
+      {{ item }} must hold exactly one line: a public key without options,
+      for example "ssh-ed25519 AAAA... iphone".
+    quiet: true
+  loop: "{{ remote_login_public_keys }}"
+  vars:
+    remote_login_key_lines: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/.ssh/' ~ item) | trim | split('\n') }}"
+  tags: [install, remote-login]
+
+- name: Check the phone public keys
+  ansible.builtin.command:
+    argv: [/usr/bin/ssh-keygen, -l, -f, "{{ playbook_dir }}/.ssh/{{ item }}"]
+  loop: "{{ remote_login_public_keys }}"
+  changed_when: false
+  check_mode: false
+  tags: [install, remote-login]
+
+- name: Read Tailscale status
+  ansible.builtin.command:
+    argv: ["{{ tailscale_cli }}", status, --json]
+  register: remote_login_tailscale
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [install, remote-login]
+
+- name: Check that Tailscale is connected
+  ansible.builtin.assert:
+    that:
+      - remote_login_tailscale.rc == 0
+      - (remote_login_tailscale.stdout | from_json).BackendState == 'Running'
+    fail_msg: >-
+      Tailscale is not installed at {{ tailscale_cli }} or is not connected.
+      Open Tailscale, sign in, connect, and run make remote-login again.
+    quiet: true
+  tags: [install, remote-login]
+
+- name: Find the Homebrew prefix
+  ansible.builtin.command: brew --prefix
+  register: remote_login_brew
+  changed_when: false
+  check_mode: false
+  tags: [install, remote-login]
+
+- name: Select the Remote Login settings
+  ansible.builtin.set_fact:
+    remote_login_allow_users: "{{ [ansible_facts['user_id']] | product(remote_login_sources) | map('join', '@') | list }}"
+    remote_login_path: "{{ [ansible_facts['env']['HOME'] ~ '/.local/bin', remote_login_brew.stdout ~ '/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'] | unique | join(':') }}"
+    remote_login_authorized_keys: "{{ (['# Managed by mac-dev-machine-setup. make remote-login replaces this file.']
+      + query('ansible.builtin.file', *([playbook_dir ~ '/.ssh'] | product(remote_login_public_keys) | map('join', '/') | list))
+      | map('trim') | list) | join('\n') ~ '\n' }}"
+  tags: [install, remote-login]

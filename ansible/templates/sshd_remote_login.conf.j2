@@ -1,0 +1,18 @@
+# Managed by mac-dev-machine-setup. `make remote-login` replaces this file.
+# Settings in a Match block override the global settings in every file, and
+# for most settings the first matching block wins. This file sorts before
+# 100-macos.conf. `make remote-login` stops if any other Match block exists,
+# because every matching AllowUsers line adds to the list.
+Match all
+    AllowUsers {{ remote_login_allow_users | join(' ') }}
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthorizedKeysFile .ssh/authorized_keys
+    AuthorizedKeysCommand none
+    TrustedUserCAKeys none
+    # Commands that run without a login shell, such as mosh-server and herdr,
+    # need ~/.local/bin and Homebrew. ~/.local/bin comes first, as in the
+    # interactive shell, so that SSH finds the same herdr as the terminal.
+    SetEnv PATH={{ remote_login_path }}

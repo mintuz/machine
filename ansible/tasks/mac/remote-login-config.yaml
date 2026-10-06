@@ -1,0 +1,93 @@
+---
+# The candidate must pass the full server gate with the listener unloaded.
+- name: Explain the Remote Login check-mode limit
+  ansible.builtin.debug:
+    msg: >-
+      Check mode does not stop Remote Login, replace its configuration, or run
+      the effective server checks. No runtime security validation has been performed.
+  when: ansible_check_mode
+
+- name: Deploy and check the Remote Login configuration while stopped
+  become: true
+  when: not ansible_check_mode
+  block:
+    - name: Stop Remote Login before deploying its configuration
+      ansible.builtin.import_tasks: remote-login-stop.yaml
+
+    - name: Read the previous Remote Login configuration metadata
+      ansible.builtin.stat:
+        path: "{{ remote_login_sshd_file }}"
+        follow: false
+      register: remote_login_previous_config
+
+    - name: Refuse a linked or non-regular Remote Login configuration
+      ansible.builtin.assert:
+        that: >-
+          not remote_login_previous_config.stat.exists
+          or (remote_login_previous_config.stat.isreg | default(false)
+              and not remote_login_previous_config.stat.islnk | default(false))
+        fail_msg: >-
+          {{ remote_login_sshd_file }} must be absent or a regular file, not a
+          symbolic link. Remote Login remains disabled.
+        quiet: true
+
+    - name: Save the previous Remote Login configuration in memory
+      ansible.builtin.slurp:
+        src: "{{ remote_login_sshd_file }}"
+      register: remote_login_previous_content
+      when: remote_login_previous_config.stat.exists
+      no_log: true
+
+    - name: Install and validate the candidate Remote Login configuration
+      block:
+        - name: Allow only tailnet key logins
+          ansible.builtin.template:
+            src: ../../templates/sshd_remote_login.conf.j2
+            dest: "{{ remote_login_sshd_file }}"
+            owner: "{{ remote_login_config_owner | default('root') }}"
+            group: "{{ remote_login_config_group | default('wheel') }}"
+            mode: "0644"
+            validate: "{{ (remote_login_sshd | default(['/usr/sbin/sshd']) + ['-t', '-f', '%s']) | map('quote') | join(' ') }}"
+
+        - name: Check the effective SSH server settings
+          ansible.builtin.import_tasks: remote-login-check.yaml
+      rescue:
+        - name: Remember the original Remote Login deployment failure
+          ansible.builtin.set_fact:
+            remote_login_deployment_failure: "{{ ansible_failed_result }}"
+
+        - name: Roll back the failed Remote Login configuration
+          block:
+            - name: Restore the previous Remote Login configuration
+              ansible.builtin.copy:
+                content: "{{ remote_login_previous_content.content | b64decode }}"
+                dest: "{{ remote_login_sshd_file }}"
+                owner: "{{ remote_login_previous_config.stat.uid | string }}"
+                group: "{{ remote_login_previous_config.stat.gid | string }}"
+                mode: "{{ remote_login_previous_config.stat.mode }}"
+              when: remote_login_previous_config.stat.exists
+              no_log: true
+
+            - name: Remove a failed new Remote Login configuration
+              ansible.builtin.file:
+                path: "{{ remote_login_sshd_file }}"
+                state: absent
+              when: not remote_login_previous_config.stat.exists
+          rescue:
+            - name: Report the deployment and rollback failures
+              ansible.builtin.fail:
+                msg: >-
+                  Remote Login remains disabled. The configuration rollback failed:
+                  {{ ansible_failed_result.msg | default('unknown rollback error') }}.
+                  Original deployment failure:
+                  {{ remote_login_deployment_failure.msg | default('unknown deployment error') }}
+                  {{ remote_login_deployment_failure.stderr | default('') }}
+
+        - name: Report the original Remote Login deployment failure
+          ansible.builtin.fail:
+            msg: >-
+              Remote Login remains disabled and the previous configuration has
+              been restored (or the new file removed). Fix the configuration and
+              run make remote-login again from the local console. Original failure:
+              {{ remote_login_deployment_failure.msg | default('unknown deployment error') }}
+              {{ remote_login_deployment_failure.stderr | default('') }}

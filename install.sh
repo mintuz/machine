@@ -6,6 +6,7 @@ cd "$repo_dir"
 profile=""
 use_1password=""
 install_dotfiles=""
+manage_remote_login=false
 usage() {
   echo "Usage: $0 [personal|work|--bootstrap-only] [--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]" >&2
   exit 64
@@ -78,10 +79,33 @@ if [[ -z "$install_dotfiles" ]]; then
     done
   fi
 fi
+if [[ "$platform" == macos && "$profile" != --bootstrap-only ]]; then
+  if [[ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-}" ]]; then
+    echo "Remote Login: leave existing access unchanged. Enable it later from the Mac's local console."
+  elif [[ -t 0 ]]; then
+    echo "Remote Login enables incoming SSH access and replaces all authorised keys with your listed phone keys."
+    echo "It can interrupt existing sessions. Run only from the Mac's local console."
+    echo "First prepare phone public keys, connect Tailscale, and review the firewall and tailnet policy."
+    echo "Keep Shields Up on. FileVault pre-unlock SSH is not covered by the key-only limits."
+    echo "See 'Remote access from an iPhone' in README.md. If not ready, choose No and use make remote-login later."
+    while true; do
+      read -r -p "Configure and enable Remote Login on this Mac? [y/N] " answer || break
+      case "$answer" in
+        y|Y|yes|Yes|YES) manage_remote_login=true; break ;;
+        n|N|no|No|NO|"") break ;;
+        *) echo "Please answer yes or no." ;;
+      esac
+    done
+  fi
+fi
+
 source "$repo_dir/scripts/bootstrap-$platform.sh"
 
 if [[ "$profile" != --bootstrap-only ]]; then
+  if [[ "$manage_remote_login" == true ]]; then
+    bash "$repo_dir/scripts/remote-login.sh" check "$profile"
+  fi
   exec "$repo_dir/scripts/with-sudo-askpass.sh" ansible-playbook local.yaml \
     -e "machine_type=$profile" -e "manage_ssh_config=$use_1password" \
-    -e "install_dotfiles=$install_dotfiles"
+    -e "install_dotfiles=$install_dotfiles" -e "manage_remote_login=$manage_remote_login"
 fi

@@ -21,9 +21,9 @@ See `README.md` for user-facing setup instructions and validation history.
 | `ansible/tasks/platform.yaml` | OS/profile validation and inventory selection |
 | `packages/` | Homebrew package inventories; no installation logic |
 | `ansible/tasks/` | Shared SSH, Git, CLI, shell, Node, and dotfiles tasks |
-| `ansible/tasks/mac/` | Mac GUI, App Store, system preferences, and Dock tasks |
-| `ansible/templates/` | SSH configuration and global Git ignore templates |
-| `.ssh/` | Public SSH keys used by managed SSH setup; never private keys |
+| `ansible/tasks/mac/` | Mac GUI, App Store, system preferences, Remote Login, and Dock tasks |
+| `ansible/templates/` | SSH client and server configuration and global Git ignore templates |
+| `.ssh/` | Public SSH keys used by managed SSH setup and Remote Login; never private keys |
 | `ansible.cfg`, `inventory`, `requirements.yaml` | Local Ansible execution and collection dependencies |
 | `scripts/check-platforms.py`, `scripts/check-safety.py` | Routing and safety regression checks |
 
@@ -40,6 +40,25 @@ See `README.md` for user-facing setup instructions and validation history.
 - `make packages PROFILE=work` previews selected inventories without writes.
 - `make check` runs shell syntax, package-selection checks, Brewfile parsing,
   safety regressions, and Ansible syntax checks without installing packages.
+- `make remote-login-check` runs only the shared Remote Login prerequisites
+  in Ansible check mode, without sudo. It checks keys, Tailscale, and Homebrew;
+  it does not deploy configuration, validate effective SSH settings, or
+  change services or keys. It can run from a remote session.
+- `make remote-login` turns on Remote Login (SSH) for tailnet key logins on
+  macOS. It passes `manage_remote_login=true`; the Mac default is false.
+  Its command wrapper runs the read-only preflight before requesting sudo.
+- `make remote-login-revoke` is a separate Mac-only opt-in. It passes
+  `revoke_remote_login=true` with the `remote-login-revoke` tag; the default
+  is false. It disables SSH startup/listener and backs up then clears the
+  invoking user's `authorized_keys`, without requiring Homebrew, Tailscale,
+  or phone keys. None of the Remote Login commands changes Shields Up.
+  If both flags are true, skip enablement and run revocation.
+  `scripts/remote-login.sh` rejects non-macOS, root, invalid profiles, and
+  missing Ansible before requesting sudo. Enablement and revocation refuse
+  detected SSH sessions (`SSH_CONNECTION`, `SSH_CLIENT`, or `SSH_TTY`).
+  The Ansible tasks also enforce this session check outside check mode.
+  These environment checks are an operator guard, not proof of local-console
+  use. Do not bypass them by clearing variables.
 
 The SSH prompt defaults to No. Without a terminal, preserve SSH unless
 `--1password-ssh` is explicit. Pass the selection as `manage_ssh_config` to
@@ -55,12 +74,25 @@ keep the default. Pass the answer as `install_dotfiles` to Ansible.
 Bootstrap-only runs do not ask about or install dotfiles. Tagged Make commands
 use the OS defaults without prompts; direct Ansible runs can override them.
 
+On macOS, interactive full setup asks
+`Configure and enable Remote Login on this Mac? [y/N]` before bootstrap.
+Default to No and pass the choice as `manage_remote_login` to Ansible.
+Warn about key replacement, session interruption, phone-key/Tailscale
+prerequisites, policy/firewall review, Shields Up, and FileVault first.
+Do not offer the prompt in detected SSH sessions. Ubuntu, bootstrap-only,
+unattended, No, Enter, and end-of-input paths leave existing access unchanged;
+none of them revokes it. When selected, run `scripts/remote-login.sh check`
+after bootstrap and before the setup sudo wrapper. A failed preflight stops
+the setup playbook. Keep the choice per run; `make remote-login` remains the
+explicit later enablement path.
+
 Bootstrap runs as the normal user, then invokes `local.yaml` through the sudo
 wrapper. Setup selects the platform and inventories, validates prerequisites,
-and updates Homebrew before running SSH, Git, CLI, GUI, Zsh, App Store, macOS
-preferences, Node, dotfiles, and Dock tasks in that order. OS and feature guards
-skip inapplicable tasks. Bootstrap helpers are sourced by `install.sh`, not
-standalone entry points; do not duplicate their work in an Ansible bootstrap.
+and updates Homebrew before running SSH, Git, CLI, Remote Login, GUI, Zsh, App
+Store, macOS preferences, Node, dotfiles, and Dock tasks in that order. OS and
+feature guards skip inapplicable tasks. Bootstrap helpers are sourced by
+`install.sh`, not standalone entry points; do not duplicate their work in an
+Ansible bootstrap.
 
 Both playbooks load `defaults.yaml` and select platform defaults before their
 work. Ansible extra variables (`-e`) override these defaults. Make passes
@@ -122,6 +154,57 @@ Reuse existing sudo authorization on headless machines; prompt only when it
 is needed and a terminal is available. Keep sudo authorization alive while
 the command runs and remove temporary credential files on exit.
 
+Remote Login is Mac-only and opt-in per run, like managed SSH: a false flag
+leaves earlier changes in place. Keep normal post-unlock SSH key-only and
+limited to tailnet source addresses; do not extend that promise to
+FileVault's pre-unlock password SSH. Source restrictions do not bind the
+wildcard listener or stop Bonjour advertising. Shields Up is not a LAN
+firewall.
+
+Keep the limits in the managed file's `Match all` block, because `Match`
+settings override global settings in every file; keep key sources
+(`AuthorizedKeysFile`, `AuthorizedKeysCommand`, `TrustedUserCAKeys`) and
+`PubkeyAuthentication yes` pinned there. Disable SSH startup and unload any
+listener before snapshotting or deploying configuration. Reject
+symlink/non-regular managed configuration files and snapshot prior content,
+owner, group, and mode.
+Validate with `sshd -t` and check effective settings with `sshd -T`
+(`remote-login-check.yaml`). Stop if sshd does not read the managed file,
+another file weakens the limits or adds a `Match` block, or a setting such
+as `DenyUsers`, `RefuseConnection`, or `ForceCommand` could block the account.
+Refuse those settings instead of overriding them: a later `Match` block can
+still add `AllowUsers` entries. If deployment or the gate fails, restore
+the prior file and metadata, or remove the new file if previously absent.
+Leave Remote Login disabled and report the original failure.
+
+Only after the gate succeeds may keys, the access list, and startup change.
+If activation or the port check fails, disable startup and unload again.
+Never suggest manual enablement after a failed run. Run from the local
+console and warn that existing sessions may be interrupted. Stopping the
+listener and removing keys do not reliably terminate existing SSH or mosh
+sessions; incident response must inspect and terminate affected processes
+without indiscriminately killing herdr or local terminal sessions.
+
+Use macOS's `/usr/sbin/sshd` and `/usr/bin/ssh-keygen` by default, because
+Homebrew OpenSSH uses other configuration paths. Preserve the existing
+`remote_login_sshd` list override for isolated validation. All launchctl
+commands use `remote_login_launchctl | default('/bin/launchctl')` so tests
+can substitute a stateful executable that rejects unexpected operations.
+Enablement requires a nonempty list of key files, each containing one
+public key line without options. Back up `authorized_keys` under
+`~/.dev-setup-backups` before each change; listed keys replace the whole
+file. Removing the final key uses the separate revoke path, never empty-key
+enablement. Keep revocation independent of Tailscale status, Homebrew, and
+public-key inputs; retain the managed SSH configuration.
+
+Never change Shields Up or rewrite the control-server policy automatically.
+README setup must require a local firewall and review of all additive
+grants and legacy ACLs before activation, removing or narrowing matching
+broad rules. Require allow/deny policy tests, with the provider's
+administrator if necessary. Keep Shields Up on until setup and policy
+checks succeed, then document only explicit manual release. Keep network
+examples fictional and the iPhone, firewall, and incident steps manual.
+
 Use `ansible_facts` rather than deprecated injected fact variables. Preserve
 Homebrew Node until a working nvm default exists, and install Node before
 unlinking its previous provider. Propagate installer errors; runtime updates
@@ -140,12 +223,25 @@ user preferences and update this guide and `README.md` when commands change.
 After code or inventory changes, run `make check` with Homebrew, Ansible,
 Python 3, and the collections from `make deps` available. It covers all four
 OS/profile combinations and SSH/dotfiles defaults and overrides, plus terminal
-prompt and flag checks with inert bootstrap scripts. Safety checks use temporary
-directories and fake commands. Use `make packages PROFILE=personal` and
-`make packages PROFILE=work` to inspect actual inventory selection on the host.
+prompt and flag checks with inert bootstrap scripts. On macOS it also checks
+the effective Remote Login SSH server settings with an unprivileged `sshd -T`,
+configuration rollback, and stop-before-write behaviour. A stateful `launchctl`
+substitute covers offline final-key revocation, check mode, and partial
+activation failure without changing host services.
+Safety checks use temporary directories and fake commands. Use
+`make packages PROFILE=personal` and `make packages PROFILE=work` to inspect
+actual inventory selection on the host.
 ShellCheck can also check the Bash entry points and sourced bootstrap scripts.
 
 Use a disposable machine or container for real bootstrap/install/update checks;
 do not run full setup on the development host merely to validate an edit.
 Syntax checks and mocked facts do not establish fresh-machine installation
 or interactive shell behavior; report those evidence limits explicitly.
+Remote Login's `--check --diff` mode is limited: it skips deployment, the
+effective-settings gate, and activation. Do not describe it as a full SSH
+configuration preview. A real enable run needs sudo and phone keys;
+revocation needs sudo but no keys or Tailscale connection. Only an actual
+phone connection and denied
+network paths establish end-to-end access and isolation. Never exercise
+real activation or revocation on the development host just to validate
+an edit.
