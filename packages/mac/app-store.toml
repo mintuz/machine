@@ -21,6 +21,7 @@
 "mas:6636520519" = { name = "Framous" }
 "mas:6479357934" = { name = "Helm" }
 "mas:6472062986" = { name = "Picasso" }
+"mas:6751829199" = { name = "ButterKit" }
 
 # Photo and creative tools
 "mas:953286746" = { name = "Darkroom" }
@@ -32,6 +33,10 @@
 "mas:411643860" = { name = "DaisyDisk" }
 "mas:425424353" = { name = "The Unarchiver" }
 "mas:1153157709" = { name = "Speedtest" }
+
+# Journaling and wellbeing
+"mas:1312926037" = { name = "stoic" }
+"mas:1519935634" = { name = "Everlog" }
 
 # Audio and speech
 "mas:1465439395" = { name = "Dark Noise" }
