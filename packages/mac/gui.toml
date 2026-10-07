@@ -19,6 +19,7 @@
 
 # Privacy, security, and authentication
 "brew-cask:protonvpn" = "latest"
+"brew-cask:tailscale-app" = "latest"
 "brew-cask:little-snitch" = "latest"
 "brew-cask:micro-snitch" = "latest"
 "brew-cask:1password" = "latest"
