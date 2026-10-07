@@ -367,6 +367,32 @@ fixed commit pin in `defaults.toml`.
 Explicit `dotfiles_version` overrides are still honoured. Remove any old
 commit override from your local configuration to follow `master`.
 
+Merge the [portable dotfiles PR](https://github.com/mintuz/.dotfiles/pull/8)
+before releasing this provisioning migration. Until it merges, dotfiles
+`master` still contains the old nvm startup hook. Testing this repository's
+branch alone does not select the companion dotfiles branch.
+
+After bootstrap and Node installation succeed, test the companion branch
+from this repository's directory with a temporary configuration override:
+
+```bash
+dotfiles_test_config="$(mktemp)"
+export dotfiles_test_config
+printf 'dotfiles_version = "feat/portable-mise-shell"\n' > "$dotfiles_test_config"
+printf 'Override file: %s\n' "$dotfiles_test_config"
+mise run dotfiles --config "$dotfiles_test_config"
+```
+
+Keep the same profile and configuration options used for setup, and pass
+this override last. Preserve local dotfiles changes if setup refuses the
+checkout; do not reset them. After a successful installation, run
+`exec zsh -l` to replace the old shell and its registered hooks. Sourcing
+the new `.zshrc` alone does not remove the old `load-nvmrc` hook.
+Until the companion PR merges, pass the override on later setup or dotfiles
+runs too. Keep the printed file path for use in new terminal sessions.
+After the PR merges, remove the temporary file and omit the override to
+follow `master`.
+
 Setup refuses a dirty dotfiles checkout. Branch updates are fast-forward
 only. An exact revision checks out that commit without deleting local
 branches. Before moving away from an unreferenced detached commit, setup
