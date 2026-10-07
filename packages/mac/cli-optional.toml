@@ -1,0 +1,10 @@
+# Optional Apple-platform CLI tools.
+# Failures are reported but do not stop the full setup.
+
+[packages]
+# Xcode project management
+"brew-cask:tuist" = { greedy = true }
+
+[tools]
+# Use the published release without trusting a third-party Homebrew formula.
+"aqua:XcodesOrg/xcodes" = "latest"

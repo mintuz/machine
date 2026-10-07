@@ -1,0 +1,14 @@
+# macOS CLI tools for both profiles. Failures stop setup.
+
+[packages]
+# macOS management and Xcode integration
+"brew:mas" = "latest"
+"brew:mole" = "latest"
+"brew:xcode-build-server" = "latest"
+
+# Login shell and Dock management used by setup
+"brew:zsh" = "latest"
+"brew:dockutil" = "latest"
+
+# Behaviour tests for this repository's shell entry points
+"brew:bats-core" = "latest"

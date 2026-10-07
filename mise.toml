@@ -1,0 +1,117 @@
+min_version = "2026.10.3"
+
+[settings]
+# Tasks never install tools as a side effect, so previews and checks stay
+# read-only. install.sh installs Python explicitly with `mise install --locked`,
+# which accepts only the URL and checksum recorded in mise.lock.
+auto_install = false
+exec_auto_install = false
+not_found_auto_install = false
+task.run_auto_install = false
+
+[tools]
+# Runs the stdlib-only helpers in scripts/devsetup.
+python = "3.14.8"
+
+# Pass options after the task name, for example `mise run cli --profile work`.
+# `setup` and `bootstrap-only` accept the install.sh arguments.
+
+[tasks.setup]
+description = "First-run setup: prompts, bootstrap, then configure everything"
+run = "./install.sh"
+raw = true
+
+[tasks.bootstrap-only]
+description = "Install prerequisites and shell activation without full setup"
+run = "./install.sh --bootstrap-only"
+raw = true
+
+[tasks.install]
+description = "Configure everything for the profile (no bootstrap or prompts)"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py install --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.packages]
+description = "Preview the selected package inventories without changes"
+run = 'python scripts/setup.py packages --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.cli]
+description = "Install native/non-Node CLI tools and fzf shell integration"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py cli --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.gui]
+description = "Install or upgrade Mac desktop apps"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py gui --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.app-store]
+description = "Install Mac App Store apps"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py app-store --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.osx]
+description = "Apply macOS preferences"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py osx --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.dock]
+description = "Lay out the macOS Dock"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py dock --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.dotfiles]
+description = "Install or refresh the external dotfiles"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py dotfiles --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.git]
+description = "Install Git and apply global Git settings"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py git --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.zsh]
+description = "Set the login shell and install oh-my-zsh"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py zsh --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.node]
+description = "Install the Node ecosystem, preserve npm globals and configure pnpm"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py node --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.update]
+description = "Update installed tools, apps, and models"
+run = 'scripts/with-sudo-askpass.sh python scripts/setup.py update --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.ssh]
+description = "Back up and configure SSH for the 1Password agent"
+run = 'python scripts/setup.py ssh --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.remote-login-check]
+description = "Check Remote Login prerequisites without sudo or changes"
+run = 'python scripts/setup.py remote-login-check --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.remote-login]
+description = "Enable key-only tailnet Remote Login on this Mac (local console only)"
+run = 'python scripts/setup.py remote-login --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.remote-login-revoke]
+description = "Disable Remote Login and clear this account's keys (local console only)"
+run = 'python scripts/setup.py remote-login-revoke --mise "{{ mise_bin }}"'
+raw = true
+
+[tasks.check]
+description = "Run shell behaviour, configuration and safety checks"
+run = "python -B scripts/check.py"
+raw = true
+
+[tasks.check-shell]
+description = "Run isolated shell behaviour tests with Bats"
+run = "bats tests/shell"
+raw = true

@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
+# Run COMMAND with sudo authorised once and kept alive. Helpers call sudo per
+# operation (sudo -A when SUDO_ASKPASS is set); the password file is removed on exit.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
   echo "Usage: $0 COMMAND [ARG ...]" >&2
   exit 64
 fi
+
+# A preview must not request credentials before the command sees --check.
+for argument in "$@"; do
+  if [[ "$argument" == "--check" ]]; then
+    exec "$@"
+  fi
+done
 
 tmp_dir=""
 cleanup() {
@@ -20,7 +29,8 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if sudo -n -v 2>/dev/null; then
+# A NOPASSWD rule can permit commands while verifypw still rejects sudo -v.
+if sudo -n -v 2>/dev/null || sudo -n true 2>/dev/null; then
   sudo_args=(-n)
 else
   if ! { exec 3<>/dev/tty; } 2>/dev/null; then
@@ -40,15 +50,13 @@ else
   printf '#!/usr/bin/env bash\ncat %q\n' "$password_file" > "$askpass_file"
   chmod 700 "$askpass_file"
   export SUDO_ASKPASS="$askpass_file"
-  export ANSIBLE_BECOME_PASSWORD_FILE="$askpass_file"
   sudo_args=(-A)
   sudo "${sudo_args[@]}" -v
 fi
-export ANSIBLE_BECOME_ASK_PASS=false
 
 (
   while true; do
-    sudo "${sudo_args[@]}" -v || exit
+    sudo "${sudo_args[@]}" -v 2>/dev/null || sudo "${sudo_args[@]}" true || exit
     sleep "${SUDO_KEEPALIVE_INTERVAL:-10}"
   done
 ) &

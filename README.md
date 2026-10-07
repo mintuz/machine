@@ -1,474 +1,829 @@
 # Development Machine Setup
 
-Set up macOS and Ubuntu development machines with Ansible and Homebrew.
-Both operating systems support personal and work profiles. Ubuntu defaults
-to a headless setup without desktop apps. Dotfiles install by default on both
-platforms, with a startup opt-out prompt on Ubuntu. Both platforms ask whether
-to configure the 1Password SSH agent before bootstrap starts.
+Configure and maintain an ARM64 development machine running macOS or
+headless Ubuntu. Choose a `personal` or `work` profile, then use the same
+commands to install software, configure your environment and keep it updated.
 
-## Quick start
+The repository aims to:
 
-Run as your normal user with sudo access:
+- Provide repeatable setup with package inventories you can review and customise.
+- Let you run the full setup or select individual components.
+- Keep SSH client changes and Mac Remote Login opt-in.
+- Preserve local dotfiles work and existing global packages when changing runtimes.
+
+[Homebrew](https://brew.sh/) manages native command-line tools and Mac apps.
+[mise](https://mise.jdx.dev/) manages runtimes and provides the command
+interface. A separately configured dotfiles repository manages personal
+shell configuration.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Set up a machine](#set-up-a-machine)
+- [Command reference](#command-reference)
+- [Configure your machine](#configure-your-machine)
+- [Choose what to install](#choose-what-to-install)
+- [Configure SSH with 1Password](#configure-ssh-with-1password)
+- [Manage dotfiles and runtimes](#manage-dotfiles-and-runtimes)
+- [Update installed software](#update-installed-software)
+- [Customise the package inventory](#customise-the-package-inventory)
+- [Remote access from an iPhone](#remote-access-from-an-iphone)
+- [Check the setup files](#check-the-setup-files)
+- [Troubleshoot setup](#troubleshoot-setup)
+
+## Requirements
+
+- An Apple silicon Mac running natively, or ARM64 Ubuntu. Intel Macs,
+  Rosetta, other Linux distributions and non-ARM64 Linux are not supported.
+- A normal user account with sudo access. Do not run the installer or
+  mise tasks as root, or prefix them with `sudo`.
+- Network access to download tools and packages.
+- For Mac App Store apps, sign in to the App Store before installing them.
+
+**Review the defaults before full setup.** This repository contains the
+owner's Git name, email address, public-key filenames, dotfiles source,
+macOS preferences and Dock layout. Read [defaults.toml](defaults.toml) and
+[the package inventories](packages/). Use [local settings](#configure-your-machine)
+to supply your own values or exclude components you do not want.
+
+## Set up a machine
+
+### Run the installer
+
+1. Download and extract the repository, then open a terminal in its directory.
+   If Git is already available, you can clone it instead:
+
+   ```bash
+   git clone https://github.com/mintuz/machine.git
+   cd machine
+   ```
+
+2. Review the defaults and prepare any local configuration file before
+   continuing. For a personal machine, run:
+
+   ```bash
+   ./install.sh personal
+   ```
+
+   For a work machine, use `./install.sh work` instead. To apply your own
+   settings, pass the file explicitly:
+
+   ```bash
+   ./install.sh personal --config "$HOME/.config/dev-machine-setup.toml"
+   ```
+
+3. Review the SSH and dotfiles choices before bootstrap. The SSH prompt
+   defaults to **No**. Ubuntu also asks whether to install dotfiles.
+   Dotfiles default to enabled; Enter keeps the configured choice.
+   Unattended runs preserve SSH unless `--1password-ssh` is explicit
+   and keep the configured dotfiles choice.
+
+4. Follow the bootstrap prompts. Setup installs OS prerequisites,
+   Homebrew, a checksum-verified mise executable and the locked helper Python.
+   If macOS requests Command Line Tools, finish that installation, then
+   rerun the same command. Ubuntu uses `apt` for bootstrap prerequisites
+   and Zsh; it does not run a system upgrade.
+
+To preserve SSH settings and omit the external dotfiles installation:
 
 ```bash
-./install.sh personal
-# or
-./install.sh work
+./install.sh personal --keep-ssh --skip-dotfiles
 ```
 
-The SSH prompt defaults to **No**, preserving the existing SSH configuration
-and agent. **Yes** backs up and replaces SSH configuration with the 1Password
-agent and this repository's personal/work GitHub public keys. Check those keys
-before opting in. The choice applies to that run; it is not saved.
+This does not prevent selected components from configuring regular shell
+files. Use [component exclusions](#choose-what-to-install) to control those
+operations too. Explicit `--dotfiles` and `--skip-dotfiles` work on both OSes.
 
-For unattended runs, use an explicit flag. Without a terminal or flag, setup
-preserves SSH:
+Full setup checks prerequisites and refreshes Homebrew before applying
+selected components. It then configures SSH, Git, command-line tools, GUI
+apps, Zsh, App Store apps, macOS preferences, Node, dotfiles and the Dock.
+Mac-only actions do not run on Ubuntu.
+
+The installer **never enables Remote Login**, even if a configuration file
+requests it. Set up [remote access](#remote-access-from-an-iphone) separately.
+Installing Tailscale or 1Password does not grant consent to configure SSH.
+Sign-in and agent or network configuration remain manual.
+
+### Install bootstrap tools only
+
+To prepare the command interface without running full setup:
 
 ```bash
-./install.sh work --1password-ssh
-./install.sh personal --keep-ssh
+./install.sh --bootstrap-only
 ```
 
-On macOS, interactive full setup also asks:
+On macOS, `./new-mac.sh` is a shortcut for this operation. Bootstrap-only
+does not ask about or install external dotfiles. After bootstrap, use the
+commands below to inspect packages or configure selected components.
 
-```text
-Configure and enable Remote Login on this Mac? [y/N]
-```
+## Command reference
 
-Choose **Yes** only from the Mac's local console, after preparing phone
-public keys, connecting Tailscale, and completing the
-[Remote Login prerequisites](#before-you-start). Setup replaces all
-authorised keys with the listed phone keys. It runs a read-only preflight
-after bootstrap and stops before the setup playbook if preflight fails.
-Keep Shields Up on until setup and the policy/firewall checks succeed.
+After bootstrap, open a fresh login shell so it loads mise. Run these
+commands from the repository directory. Except for `setup` and
+`bootstrap-only`, tasks do not prompt for feature choices. They use
+defaults, supplied configuration files and explicit flags.
 
-Enter, No, or end of input leaves existing Remote Login access unchanged;
-it does not revoke access. Ubuntu, bootstrap-only runs, unattended runs,
-and detected SSH sessions do not ask or enable Remote Login.
-You can enable it later with `make remote-login`.
+| Command | Purpose |
+|---|---|
+| `mise run setup personal` | Run the installer, including bootstrap and consent prompts. |
+| `mise run bootstrap-only` | Run bootstrap without full setup. |
+| `mise run packages --profile work` | Show selected packages without installing them. |
+| `mise run install --profile work` | Run full setup without bootstrap or feature prompts. |
+| `mise run cli` | Install native and non-Node command-line tools, plus fzf integration. |
+| `mise run node` | Install Node, pnpm and Node-based tools; preserve npm globals. |
+| `mise run gui` | Install or upgrade Mac desktop apps. |
+| `mise run app-store` | Install Mac App Store apps; requires sign-in. |
+| `mise run git` | Install Git and apply global Git settings. |
+| `mise run zsh` | Set the login shell and install Oh My Zsh. |
+| `mise run dotfiles` | Install or refresh the configured external dotfiles. |
+| `mise run osx` | Apply macOS preferences. |
+| `mise run dock` | Apply the configured macOS Dock layout. |
+| `mise run ssh` | Explicitly back up and configure the 1Password SSH client setup. |
+| `mise run update` | Maintain installed software in selected categories. |
+| `mise run remote-login-check` | Check Mac Remote Login prerequisites without changes. |
+| `mise run remote-login` | Enable Mac remote access after the security prerequisites are met. |
+| `mise run remote-login-revoke` | Disable Mac Remote Login and clear this account's authorised keys. |
+| `mise run check` | Run the non-installing repository checks. |
+| `mise run check-shell` | Run the shell behaviour checks. |
 
-On Ubuntu, full setup also asks `Install your dotfiles? [Y/n]` before
-bootstrap. Press Enter to install or answer No to skip. Without a terminal,
-dotfiles install by default. Use these flags to choose without a prompt:
+Use `--profile personal|work` with component tasks. The installer uses a
+positional profile instead. For task-specific help:
 
 ```bash
-./install.sh work --skip-dotfiles
-./install.sh personal --dotfiles
+mise run cli -- --help
 ```
 
-Both flags work on macOS too. Bootstrap-only runs do not install dotfiles or
-ask about them. The choice applies to one run; `make dotfiles` installs them
-later. The external dotfiles still contain Mac-specific shell paths; see the
-compatibility note below before using the resulting shell on Linux.
+To inspect both inventories and preview supported installation actions:
 
-On macOS, bootstrap first if you want 1Password SSH and still need to sign in:
+```bash
+mise run packages --profile personal
+mise run packages --profile work
+mise run install --profile personal --keep-remote-login --check
+```
+
+`--check` bypasses sudo and reports supported previews without making
+changes. Some host actions are not previewed. It is not a complete
+configuration or SSH deployment simulation. Tasks do not automatically
+install missing runtimes, so complete bootstrap first.
+
+The direct `install` task honours configured steps, including an explicitly
+enabled Remote Login step. Add `--keep-remote-login` when that operation must
+remain excluded. Follow the [remote access guide](#remote-access-from-an-iphone)
+before any enablement.
+
+## Configure your machine
+
+### Create local settings
+
+Create a TOML file outside the checkout. Replace the sample identity with
+your own. This example also omits external dotfiles and the Mac App Store
+and Dock steps:
+
+```toml
+# ~/.config/dev-machine-setup.toml
+git_name = "Your Name"
+git_email = "you@example.com"
+
+[steps]
+dotfiles = false
+
+[mac]
+pnpm_home = "~/Library/pnpm"
+
+[mac.steps]
+app-store = false
+dock = false
+
+[linux]
+pnpm_home = "~/.local/share/pnpm"
+```
+
+Configuration files are not discovered automatically. Pass your file on
+each command that needs it:
+
+```bash
+./install.sh personal --config "$HOME/.config/dev-machine-setup.toml"
+```
+
+To layer another file, create it first, then pass it last:
+
+```bash
+mise run install --profile work --keep-remote-login \
+  --config "$HOME/.config/dev-machine-setup.toml" \
+  --config "$HOME/.config/dev-machine-work.toml"
+```
+
+Setup loads `defaults.toml`, then each `--config` file in order. Within each
+file, `[mac]` or `[linux]` overrides shared settings. Later files override
+earlier files; explicit feature flags take precedence. `[steps]` merges by
+key. Other lists replace earlier lists. Relative paths resolve from the
+directory where you invoked the command, including through mise.
+
+Unknown settings, unknown steps and non-boolean step choices are errors,
+including in inactive platform tables. On a machine without the helper
+Python, TOML validation follows bootstrap. An invalid file can therefore
+leave bootstrap changes behind.
+
+### Select a profile
+
+The default profile is `personal`. Select `work` with the installer's
+positional argument, `--profile work` on tasks, `DEVSETUP_PROFILE`, or a
+root-level `profile = "work"` in a supplied configuration file.
+
+All supplied profile values must agree. A command-line profile does not
+override a conflicting environment variable or file. Unset
+`DEVSETUP_PROFILE` or make these values agree before changing profiles.
+Setup does not save your per-run profile choice.
+
+Profiles select additive package layers and the primary managed GitHub
+SSH key. They do not select separate Git identities or uninstall packages
+from another profile. Set `git_name` and `git_email` explicitly.
+
+### Adjust preferences and paths
+
+Use the keys in [defaults.toml](defaults.toml) to configure SSH public-key
+filenames, the agent socket, the dotfiles repository and revision, pnpm
+paths and global packages. Keep platform-specific paths under `[mac]` or
+`[linux]`. Bootstrap uses `/opt/homebrew` on macOS and
+`/home/linuxbrew/.linuxbrew` on Ubuntu.
+
+On macOS, `macos_preferences` contains the arguments after `defaults write`.
+`{home}` expands to your home directory. `dock_items` contains argument
+lists for `dockutil --add`; paths can start with `~/`.
+
+```toml
+[mac]
+macos_preferences = [
+  ["com.apple.finder", "ShowPathbar", "-bool", "true"],
+  ["com.apple.screencapture", "location", "-string", "{home}/Desktop"],
+]
+dock_items = []
+```
+
+An empty Dock list leaves the Dock untouched. An empty preferences list
+skips configurable defaults, but Library visibility and automatic-update
+checks still run. Skip `osx` to omit the entire preferences operation.
+
+## Choose what to install
+
+Use repeated `--skip` options to omit components for one full setup run:
+
+```bash
+./install.sh personal --skip app-store --skip dock
+```
+
+Supported steps are `ssh`, `git`, `cli`, `remote-login`, `gui`, `zsh`,
+`app-store`, `osx`, `node`, `dotfiles` and `dock`. All default to enabled
+except `ssh` and `remote-login`. Save recurring exclusions in `[steps]`,
+`[mac.steps]` or `[linux.steps]` in your local configuration file.
+
+A direct component command explicitly opts in for that run. For example,
+this installs App Store apps even if your file excludes them from full setup:
+
+```bash
+mise run app-store --config "$HOME/.config/dev-machine-setup.toml"
+```
+
+The command reports the override. Contradictory explicit flags fail.
+Bootstrap and prerequisite checks cannot be skipped. `--skip` is for
+aggregate setup and maintenance, not direct component commands.
+
+**Skipping is not uninstalling or revoking.** It leaves previous settings
+and installed software in place. Included components may still install
+native prerequisites. For example, skipping Git configuration does not
+exclude the Git executable needed for dotfiles. Homebrew dependencies and
+the external dotfiles installer can have their own effects.
+
+The `cli` step includes fzf, but not Node. The separate `node` step owns
+Node, pnpm, all `npm:` mise providers and npm global-package transfers.
+Tailscale is a Mac GUI package, not an App Store package. Its sign-in and
+required macOS extension approval remain manual.
+
+## Configure SSH with 1Password
+
+SSH client setup controls outgoing connections, such as GitHub access. It
+is separate from the Mac's incoming Remote Login service.
+
+The installer's SSH prompt defaults to No. Declining leaves existing SSH
+files and agents untouched, including settings from an earlier opt-in.
+This consent choice overrides a file's `steps.ssh` setting for that run.
+The choice is not saved for the next invocation.
+
+Before opting in, review the public keys selected in `defaults.toml` or
+your local settings. Only public keys belong in this repository's `.ssh/`
+directory. Opting in replaces `~/.ssh/config` and copies the selected public
+keys. Setup first backs up existing SSH files in a unique timestamped
+directory under `~/.dev-setup-backups`.
+
+On macOS, you can install 1Password before full setup:
 
 ```bash
 ./install.sh --bootstrap-only --1password-ssh
-# Open 1Password, sign in, and enable its SSH agent.
-./install.sh personal --1password-ssh
 ```
 
-Sign in to the Mac App Store before installing its apps. Public GitHub keys
-for managed SSH configuration are stored under `.ssh/` in this repository.
-`new-mac.sh` remains a shortcut for Mac bootstrap only.
+Sign in to 1Password and enable its SSH agent manually. Then run full setup
+with `--1password-ssh`, or explicitly configure SSH after bootstrap:
 
-On Ubuntu, bootstrap installs apt prerequisites, Homebrew, and Ansible.
-Opting into 1Password SSH uses `SSH_AUTH_SOCK` when it is set, allowing a
-forwarded 1Password agent to follow each session's socket. Otherwise it uses
-`~/.1password/agent.sock`, which requires an already configured local 1Password
-app. Ubuntu setup does not install that desktop app. On a headless server,
-[forward the agent from your client](https://www.1password.dev/ssh/agent/forwarding)
-before opting in. Setup does not sign in to 1Password or enable the agent itself.
+```bash
+mise run ssh --profile personal --config "$HOME/.config/dev-machine-setup.toml"
+```
 
-The SSH choice controls SSH configuration, not the software inventory:
-1Password remains a Mac GUI package, and its CLI remains a shared package.
-Declining on a later run leaves the existing configuration in place; it does
-not undo an earlier opt-in.
+The direct `ssh` task does not ask for consent again. The Mac app and
+1Password command-line package inventories are independent of the SSH
+choice, so declining SSH management does not exclude those packages.
 
-For unattended setup, configure passwordless sudo for the setup user.
-Ansible commands reuse and refresh existing sudo authorization. If a password
-is needed, run from a terminal; the wrapper fails clearly when no terminal is
-available and removes its temporary password helper when the command exits.
+On headless Ubuntu, forward the SSH agent from your client. When
+`SSH_AUTH_SOCK` exists, setup uses the literal `IdentityAgent "SSH_AUTH_SOCK"`
+rather than saving its temporary socket path. Otherwise it uses
+`~/.1password/agent.sock`. Headless bootstrap does not install the Linux
+desktop app.
 
-## Commands
+## Manage dotfiles and runtimes
 
-| Command | Action |
-| --- | --- |
-| `make` / `make personal` | Bootstrap and run personal setup |
-| `make work` | Bootstrap and run work setup |
-| `make setup` | Bootstrap only |
-| `make deps` | Install Ansible collections |
-| `make packages PROFILE=work` | Preview selected inventories without changing the machine |
-| `make cli PROFILE=work` | Install shared, OS, and work CLI tools |
-| `make install PROFILE=work` | Run tasks tagged install |
-| `make gui` | Install Mac applications; skipped on Ubuntu |
-| `make app-store` | Install Mac App Store apps; skipped on Ubuntu |
-| `make osx` / `make dock` | Configure macOS preferences / Dock; skipped on Ubuntu |
-| `make git PROFILE=work` | Configure Git using the configured name and email |
-| `make node` | Install nvm-managed Node LTS and configure pnpm |
-| `make dotfiles` | Install or refresh the external dotfiles on either OS |
-| `make remote-login-check` | Check macOS Remote Login prerequisites read-only, without sudo; does not validate effective SSH settings or network isolation |
-| `make remote-login` | Configure and enable macOS SSH key logins from the local console; first complete the [remote access prerequisites](#before-you-start) |
-| `make remote-login-revoke` | From the local console, disable macOS SSH startup/listener and back up then clear your `authorized_keys`; existing sessions need separate action |
-| `make update` | Update installed Homebrew packages, CLI casks, and runtime tools; App Store only on Mac |
-| `make check` | Check routing, safety regressions, Brewfile parsing, shell syntax, and Ansible syntax |
+### Install or refresh dotfiles
 
-Tagged commands assume bootstrap has already run. `PROFILE` defaults to
-`personal`; it is not remembered between invocations. `make personal`,
-`make work`, and `make setup` use the startup SSH prompt. Tagged Make commands
-do not prompt and leave SSH configuration alone by default. `make personal` and
-`make work` explicitly select their named profile.
+Setup delegates to the configured dotfiles repository's `install.sh`.
+Review that repository before running it. Its shell configuration must
+support your platform and activate mise. To omit it, use
+`--skip-dotfiles` during setup; to install it later, run:
 
-## Package inventory
+```bash
+mise run dotfiles --profile personal --config "$HOME/.config/dev-machine-setup.toml"
+```
 
-Each setup combines four layers, in this order:
+By default, each enabled run fetches and fast-forwards `~/.dotfiles` to
+the latest `master`. To select a reviewed branch, tag or commit, set
+`dotfiles_version` at the root of your local configuration file. Pass that
+file on subsequent runs too. Changing this repository does not change the
+external dotfiles revision.
+
+Setup refuses dirty checkouts, divergent branch updates and an origin that
+differs from `dotfiles_repo`. Save local work and resolve the reported
+condition before retrying. Before leaving an unreferenced detached commit,
+save it on a branch. Setup does not reset local work or rewrite origin.
+
+Before invoking the external installer, setup backs up non-symlink paths
+listed in `dotfiles_conflict_paths` under `~/.dev-setup-backups`. The default
+list contains `.agents/.skill-lock.json`. This does not guarantee that the
+external installer backs up every file it manages. Existing backup
+directories remain untouched.
+
+After installation, start a fresh login shell:
+
+```bash
+exec zsh -l
+```
+
+### Understand shell and runtime settings
+
+The machine's runtime settings live in
+`~/.config/mise/conf.d/dev-machine-setup.toml`. Compatible dotfiles use an
+adjacent `dotfiles.toml` fragment. Setup honours `MISE_CONFIG_DIR` and
+`XDG_CONFIG_HOME`; it preserves user mise settings and refuses to write
+through externally symlinked configuration directories. Tools selected by
+another profile remain in the machine-managed fragment.
+
+Compatible dotfiles should support project `.nvmrc` and `.node-version`
+files and preserve a custom `PNPM_HOME`. When dotfiles are disabled,
+bootstrap configures Homebrew and mise in regular shell files. Selected
+components add their own shell integration. Setup does not edit symlinked
+shell files owned by another repository; those files must activate mise
+and source fzf themselves.
+
+### Change Node without losing global packages
+
+Run the `node` task to install the Node ecosystem independently:
+
+```bash
+mise run node --profile personal --config "$HOME/.config/dev-machine-setup.toml"
+```
+
+Setup preserves npm globals at their installed versions from the previous
+mise runtime, nvm's default and Homebrew Node. Existing target packages win.
+It reports version conflicts, linked or unreadable packages and other nvm
+versions rather than silently discarding them. It honours an explicit npm
+prefix without rewriting `.npmrc` and keeps old runtimes.
+
+Homebrew Node remains linked until the target runs, the package transfer
+succeeds and the default configuration is saved. Conflicting user mise
+settings stop this change. nvm and Homebrew sources are read only before the
+machine fragment first declares Node; later runs do not restore packages
+you deliberately uninstalled.
+
+If a transfer fails, correct the reported cause and rerun the same command
+with the same profile and configuration. The adjacent
+`dev-machine-setup.node.json` records the requested version selector and
+pending source. Setup retains the working pin and resumes from that source.
+If the source was removed, restore it first. Do not delete pending state
+or remove old runtimes to bypass a failure.
+
+## Update installed software
+
+With default component choices, run:
+
+```bash
+mise run update
+```
+
+Updates cover installed software, not only the current profile's inventory:
+Homebrew packages, machine-managed mise tools, npm and pnpm globals, Mac
+App Store apps and Ollama models. Missing tools are skipped. Ubuntu system
+updates are not included.
+
+Pass your local configuration files when they contain runtime settings or
+saved component choices. To exclude categories for one run:
+
+```bash
+mise run update --config "$HOME/.config/dev-machine-setup.toml" \
+  --skip app-store --skip gui
+```
+
+Update accepts these four exclusions and honours their saved `[steps]` choices:
+
+| Component | Maintenance scope |
+|---|---|
+| `cli` | Native formulae, CLI casks, non-Node mise tools and Ollama models. |
+| `gui` | Other installed casks. |
+| `node` | Managed Node, npm and pnpm. |
+| `app-store` | Mac App Store apps through `mas upgrade`. |
+
+Skipping App Store maintenance does not change Apple's automatic updates.
+Exclusions filter whole categories. Cleanup is limited to included
+packages, but Homebrew can still upgrade their dependencies. Maintenance
+preserves Homebrew pinning and non-greedy cask defaults. Non-Node mise
+upgrades keep old versions; Node retains its working pin until the new
+target and package transfer succeed.
+
+Independent components continue after an error. The command returns failure
+if any component failed. Resolve the reported cause, then retry with the
+same options. Follow the Node recovery instructions above for pending transfers.
+
+## Customise the package inventory
+
+Each run combines four additive layers in order:
 
 1. `packages/shared/`
 2. `packages/shared/<personal|work>/`
 3. `packages/<mac|linux>/`
 4. `packages/<mac|linux>/<personal|work>/`
 
-The current files are:
+Each layer can contain `cli.toml`, `cli-optional.toml`, `gui.toml`,
+`gui-optional.toml` and `app-store.toml`. Create only the layers you need;
+the shared required CLI inventory must exist. Unknown inventory paths and
+malformed declarations stop setup.
 
-```text
-packages/
-├── shared/
-│   └── Brewfile.cli
-└── mac/
-    ├── Brewfile.cli
-    ├── Brewfile.cli-optional
-    ├── Brewfile.gui
-    ├── Brewfile.app-store
-    ├── personal/
-    │   ├── Brewfile.cli
-    │   └── Brewfile.gui
-    └── work/
-        └── Brewfile.gui
+Add native packages under `[packages]` with `brew:`, `brew-cask:` or `mas:`
+keys. Add mise tools under `[tools]` with their version selectors. Follow
+existing declarations in [packages/](packages/) for platform selectors,
+App Store IDs and greedy cask upgrades. Keep Mac desktop apps under
+`packages/mac/`. Shared CLI casks need `os = "macos"` and separate Linux
+providers where needed. Setup generates its Brewfile from this inventory.
+
+Before installing a changed selection, inspect it:
+
+```bash
+mise run packages --profile personal
+mise run packages --profile work
 ```
 
-Create `packages/linux/Brewfile.cli` only when there is a Linux-only tool.
-For a work CLI on both systems, add it to
-`packages/shared/work/Brewfile.cli`. For a personal Ubuntu addition, use
-`packages/linux/personal/Brewfile.cli`. Missing optional layers need no files.
+Required CLI failures stop setup. Optional CLI, GUI and App Store failures
+are reported while setup continues. Removing an inventory entry does not
+uninstall an existing package.
 
-Each layer may contain `Brewfile.cli`, `Brewfile.cli-optional`,
-`Brewfile.gui`, `Brewfile.gui-optional`, and `Brewfile.app-store`.
-GUI and App Store inventories are executed only on macOS. Keep desktop
-applications under `mac/`; Ubuntu desktop application setup is not implemented.
-Use the CLI inventories for CLI casks such as Codex and Notion CLI.
+### Review package trust
 
-CLI inventory failures stop setup; optional CLI and GUI installation failures
-are reported and setup continues. App Store installation is also best effort;
-failed app IDs are printed. Missing required inventories and misspelled
-inventory paths stop setup. Profile layers are additive: switching
-profiles does not uninstall the previous profile's packages. `tlrc` replaces
-the disabled `tldr` formula and still provides the `tldr` command.
+Homebrew formulae and casks can execute Ruby with your user's privileges.
+Review third-party sources and use fully qualified names. Setup grants
+item-level trust to selected, fully qualified formulae and casks, not whole
+taps. Package previews do not change the trust store.
 
-## Configuration
+Trust persists for later updates. Maintenance does not grant blanket trust
+or restore permissions you revoked. If an update needs a missing permission,
+review the package before restoring its item permission. For example, only
+if you trust the selected [OMP formula](https://github.com/can1357/homebrew-tap):
 
-Shared preferences live in `defaults.yaml`. OS defaults live in
-`ansible/vars/mac.yaml` and `ansible/vars/linux.yaml`. Ansible extra variables
-(`-e`) override them.
+```bash
+brew trust --formula can1357/tap/omp
+```
 
-- `machine_type` selects personal/work package layers and, when managed,
-  the primary GitHub SSH key. Git name and email still come from `git_name`
-  and `git_email`; profiles do not invent different Git identities.
-- `manage_ssh_config` defaults to false on both platforms. The installer
-  passes the startup choice explicitly. For a direct Ansible SSH-only run, use
-  `scripts/with-sudo-askpass.sh ansible-playbook local.yaml --tags ssh
-  -e machine_type=work -e manage_ssh_config=true`. When enabled,
-  setup backs up and replaces SSH configuration using `ssh_agent_socket`
-  and the configured public key filenames. Inputs are checked before writes;
-  every managed SSH run has a separate timestamped backup, including when
-  selecting the SSH tasks directly. `ssh_agent_socket` can be overridden
-  with Ansible extra variables for a custom socket.
-- `install_dotfiles` defaults to true on both platforms. The Ubuntu startup
-  prompt and `--skip-dotfiles` can disable it for a full setup run. Direct
-  Ansible runs can use `-e install_dotfiles=false`; tagged Make commands do
-  not prompt. The external dotfiles currently contain a hardcoded
-  `/opt/homebrew` shell path, so successful installation does not establish
-  Linux shell compatibility. That requires changes in the external repository.
-  The clone task refuses to discard local changes in an existing checkout.
-- `manage_remote_login` defaults to false on macOS. The general installer
-  passes its Remote Login prompt choice explicitly for that run.
-  `make remote-login` also sets it to true for one run. Setting it to false
-  does not undo an earlier run. `remote_login_public_keys` lists phone public
-  key files in `.ssh/` and must not be empty when enabling access.
-  `remote_login_sources` limits the source addresses accepted for SSH logins;
-  it does not bind the listener to those interfaces. `tailscale_cli` is the
-  path of the Tailscale command-line tool. None of the Remote Login commands
-  changes Shields Up. `make remote-login-revoke` sets the separate,
-  default-false `revoke_remote_login` flag for one run. It needs neither
-  phone keys nor Homebrew nor a Tailscale connection.
-  If both opt-in flags are true, revocation takes precedence.
-  See [Remote access from an iPhone](#remote-access-from-an-iphone).
-- Ubuntu gets Homebrew shell initialization and Node/pnpm paths without
-  requiring the external dotfiles. Zsh is installed through apt on Ubuntu,
-  with Oh My Zsh and autosuggestions enabled. Homebrew Node stays linked
-  until nvm has a working default runtime; `make node` installs Node LTS
-  before switching ownership to nvm.
-- Backups are written under `~/.dev-setup-backups`; existing backups under
-  `~/.mac-setup-backups` are left in place.
-
-`make update` updates installed tools, including those installed outside the
-selected profile; it does not uninstall packages or run Ubuntu system upgrades.
-Its summary distinguishes completed, skipped, and failed components. Runtime
-and cask failures are collected, reported, and cause a nonzero exit status.
-Commands that ran may still report `changed` on a repeat run; a successful
-rerun does not imply a zero-change Ansible recap.
+Then rerun the failed command. Setup does not disable Homebrew's trust
+policy or bypass Gatekeeper. On Linux, the vfox 1Password CLI provider
+downloads over HTTPS without an upstream checksum; HTTPS transport is not
+an upstream checksum check.
 
 ## Remote access from an iPhone
 
-`make remote-login` configures SSH access to this Mac from your Tailscale
-network (tailnet), for example from an iPhone with Secure ShellFish or Moshi.
-It works on macOS only, and only when you opt in. The key-only and
-source-address limits apply to normal SSH **after FileVault unlocks**, not
-to every boot state or every service on the Mac.
+Use `./remote-login.sh` to opt in to SSH access from your Tailscale
+network (tailnet), for example from an iPhone running Secure ShellFish
+or Moshi. The installer does not enable Remote Login. The key-only and
+source-address limits apply to normal SSH **after FileVault unlocks**,
+not every boot state or every service on the Mac.
 
-Start with [prerequisites](#before-you-start) and
-[network restrictions](#restrict-network-access-before-setup), then
-[set up the Mac](#set-up-the-mac) and [iPhone](#set-up-the-iphone).
-For existing access: [change keys](#add-or-remove-phone-keys),
-[revoke access](#turn-off-remote-access),
-[handle a lost phone](#if-the-iphone-is-lost-or-compromised), or
-[troubleshoot](#remote-login-troubleshooting).
+### Check prerequisites and risks
 
-### Before you start
+Complete bootstrap to install mise and the locked Python. Run the commands
+from this repository as your normal ARM64 macOS account, not root. Do not
+prefix the mise commands with `sudo`: enablement and revocation request
+sudo when needed. Enablement and its read-only readiness check need
+connected Tailscale and phone public keys. Revocation needs neither.
+Remote Login uses the configured Homebrew prefix in its SSH command path
+but does not require the Homebrew executable.
 
-Use your normal macOS account, not root. The commands require Ansible
-and the repository's Ansible collections; complete bootstrap first if
-needed. Enablement and its read-only preflight also require Homebrew,
-connected Tailscale, and phone public keys. Revocation does not.
+Read these limits before enabling access:
 
-Read these limits before enabling Remote Login:
+- **FileVault has a separate pre-unlock SSH path.** After a restart, macOS
+  can accept an SSH password to unlock the disk. The managed settings are
+  on the locked data volume and do not apply then. See
+  `man apple_ssh_and_filevault`. Use a strong login password. If you need
+  key-only access in every boot state, do not enable the built-in Remote
+  Login service with this command.
+- **SSH listens beyond the tailnet.** Remote Login uses wildcard listeners
+  and advertises SSH on the local area network (LAN) through Bonjour. `remote_login_sources`
+  restricts authentication, not listener exposure. Configure and verify a
+  local firewall before enablement. Do not assume a post-unlock application
+  firewall protects FileVault's pre-unlock SSH.
+- **Shields Up is not a LAN firewall.** Keep it on until setup and the
+  policy checks succeed. No Remote Login command changes it. Releasing it
+  allows inbound traffic to every service permitted by the full tailnet
+  policy, including development servers if broad rules remain.
+- **Use a fresh local terminal for changes.** Enablement, key changes and
+  revocation must run at the Mac's local console, not over SSH or mosh.
+  Commands reject detected SSH sessions using `SSH_CONNECTION`,
+  `SSH_CLIENT` and `SSH_TTY`. Never clear these variables to bypass the
+  check. Reused terminals can retain or omit them, so this guard cannot
+  prove local-console use. The read-only `mise run remote-login-check`
+  may run remotely.
+- **Setup interrupts access and replaces keys.** It disables and unloads
+  Remote Login before replacing its live configuration. It backs up and
+  replaces all of `~/.ssh/authorized_keys` with the configured phone keys
+  and limits Remote Login to your account. Existing SSH or mosh sessions
+  may be interrupted, but listener shutdown and key removal do not reliably
+  terminate them.
 
-- Before FileVault unlocks after a restart, macOS can accept an SSH password
-  to unlock the disk. The managed SSH settings are on the locked data volume
-  and do not apply then (`man apple_ssh_and_filevault`). Use a strong login
-  password; do not assume the post-unlock key-only rules protect this path.
-  If you require key-only access in every boot state, do not enable the
-  built-in Remote Login service with this command.
-- Remote Login uses wildcard listeners and advertises SSH on the local
-  network with Bonjour. `remote_login_sources` restricts authentication, not
-  network exposure. **Tailscale Shields Up is not LAN protection.** Configure
-  and verify a local firewall before enabling Remote Login. Do not assume
-  a post-unlock application firewall protects FileVault's pre-unlock SSH.
-- Run enablement, key changes, and revocation from a local console, not
-  SSH or mosh. The commands refuse environments with `SSH_CONNECTION`,
-  `SSH_CLIENT`, or `SSH_TTY` set; do not unset these to bypass the check.
-  A reused terminal session can retain or omit these variables; the guard
-  cannot prove local-console use. Start a fresh local terminal on the Mac.
-  Setup disables and unloads Remote Login before replacing its live
-  configuration. Existing sessions may be interrupted; stopping the
-  listener does not reliably end all SSH or mosh sessions.
-  The read-only `make remote-login-check` does not require a local console.
-- Keep Shields Up on until setup and the policy checks below succeed.
-  None of the Remote Login commands changes it.
-  Releasing it permits inbound traffic to any service allowed by the full
-  tailnet policy, including development servers if broad rules remain.
-
-Install the Tailscale app on the Mac and iPhone and sign in to the same
-tailnet. On the Mac, explicitly keep inbound tailnet connections blocked
-while preparing access:
+Install the Tailscale app on the Mac and iPhone, then sign in to the same
+tailnet. While preparing access, explicitly block inbound tailnet traffic
+on the Mac:
 
 ```bash
 tailscale set --shields-up=true
 ```
 
-Install Moshi, Secure ShellFish, or both on the iPhone. Moshi has herdr
-support; in Secure ShellFish you start herdr yourself. Run `make cli` to
-install mosh from the personal Mac inventory. Install herdr from
-[herdr.dev](https://herdr.dev); SSH commands find it in `~/.local/bin`, the
-Homebrew `bin` directory, or `/usr/local/bin`.
+Install Secure ShellFish, Moshi, or both on the iPhone. Moshi supports herdr;
+in Secure ShellFish, you start herdr yourself. For mosh connections, install
+mosh on the Mac from the personal CLI inventory:
 
-### Restrict network access before setup
+```bash
+mise run cli --profile personal
+```
 
-Review the **whole** Tailscale or Headscale access policy before activating
-SSH or releasing Shields Up. Grants and legacy ACLs are additive: adding a
-narrow rule does not cancel a broad allow rule. Remove or narrow every
-matching broad grant and ACL, including rules that allow all devices,
-all ports, or access through a group or tag. This repository never rewrites
-the control-server policy.
+Install herdr from [herdr.dev](https://herdr.dev). SSH commands search
+`~/.local/bin`, mise's shims, Homebrew's `bin` directory and `/usr/local/bin`.
+Setup warns if it cannot find `mosh-server` or `herdr` on that path.
 
-Allow only the intended iPhone to reach this Mac on TCP port 22 (SSH) and
-UDP ports 60000–61000 (mosh). This is an illustrative grant, not a complete
-policy. The addresses `100.100.100.10` and `100.100.100.20` are fictional
-examples, not actual device addresses; replace them with your devices'
-addresses and include their IPv6 identities where applicable:
+### Restrict the network policy and firewall
+
+Before enabling SSH or releasing Shields Up, review the **whole** Tailscale
+or Headscale access policy. Grants and legacy ACLs are additive: a narrow
+rule does not cancel a broad allow rule. Remove or narrow every matching
+broad grant and ACL, including access through groups or tags and rules
+allowing all devices or all ports. This repository never changes the
+control-server policy.
+
+Allow only the intended iPhone to reach this Mac on TCP 22 for SSH and
+UDP 60000–61000 for mosh. The following grant is illustrative, not a
+complete policy. `100.100.100.10` and `100.100.100.20` are fictional;
+replace them with your devices' addresses and include IPv6 identities
+where applicable:
 
 ```jsonc
 "hosts": { "iphone-example": "100.100.100.10", "mac-example": "100.100.100.20" },
 "grants": [{ "src": ["iphone-example"], "dst": ["mac-example"], "ip": ["tcp:22", "udp:60000-61000"] }]
 ```
 
-Use your control server's policy tests to verify both allowed and denied
-traffic: the iPhone may reach those SSH/mosh ports; other devices may not;
-and the iPhone may not reach other Mac services. If you cannot inspect the
-full policy or run these tests, ask the provider or control-server
-administrator to do so and confirm the results before proceeding. Merely
-adding the example grant is not proof of isolation.
+Run your control server's policy tests for both allowed and denied traffic:
 
-Configure the local firewall, such as Little Snitch, before setup too.
-Allow incoming TCP 22 and UDP 60000–61000 only from the intended iPhone's
-tailnet addresses; block other sources, including LAN addresses. Review
-existing rules and their precedence so a broad allow cannot override these
-limits. Verify the rules for both IPv4 and IPv6. The command does not
-configure the firewall. A firewall rule allowing SSH is not a substitute
-for reviewing other exposed services.
+- The intended iPhone may reach this Mac's SSH and mosh ports.
+- Other devices may not reach those ports.
+- The iPhone may not reach unrelated services on the Mac.
 
-### Set up the Mac
+If you cannot inspect the full policy or run its tests, ask the provider
+or control-server administrator to do so and confirm the results before
+proceeding. Adding the example grant does not prove isolation.
 
-1. Complete the network policy and local firewall checks above. Leave
-   Shields Up on.
-2. For Secure ShellFish, create a key on the iPhone's Secure Enclave.
-   The private key cannot leave the iPhone.
-3. For Moshi, create an Ed25519 key. Turn on **Biometric for keys** and
-   keep credential sync off. Only create keys for the apps you will use.
-4. Copy each public key into `.ssh/` in this repository. For example, copy
-   the public key on the iPhone, then run this command on the Mac. This needs
-   Universal Clipboard.
+Configure a local firewall, such as Little Snitch, before setup. Allow
+incoming TCP 22 and UDP 60000–61000 only from the intended iPhone's tailnet
+addresses. Block other sources, including LAN addresses. Review existing
+rules and their precedence so a broad allow cannot override these limits.
+Verify IPv4 and IPv6 rules. The setup command does not configure your
+firewall. Allowing SSH is not a substitute for reviewing other exposed
+services.
+
+### Prepare phone keys and enable access
+
+Complete the network policy and firewall checks first. Leave Shields Up on.
+Only prepare keys for the phone apps you will use:
+
+1. In Secure ShellFish, create a key on the iPhone's Secure Enclave. Its
+   private key cannot leave the phone.
+2. In Moshi, create an Ed25519 key. Enable **Biometric for keys** and keep
+   credential sync off.
+3. Copy each public key into this repository's `.ssh/` directory. Each file
+   must contain exactly one public key line, without authorised-key
+   options. Never copy a private key into the repository. For example,
+   with Universal Clipboard available, copy the ShellFish public key on
+   the iPhone and run this on the Mac:
 
    ```bash
    pbpaste > .ssh/iphone-shellfish.pub
    ```
 
-5. List only those key files in `defaults.yaml`:
+4. In your local configuration file, list only the public key files you
+   prepared. Put these settings at the root, before any table heading.
+   For example, if you prepared both keys:
 
-   ```yaml
-   remote_login_public_keys:
-     - iphone-shellfish.pub
-     - iphone-moshi.pub
+   ```toml
+   # ~/.config/dev-machine-setup.toml
+   remote_login_public_keys = ["iphone-shellfish.pub", "iphone-moshi.pub"]
    ```
 
-   By default, `remote_login_sources` accepts SSH logins from all tailnet
-   addresses. Narrow it to the iPhone's Tailscale IPv4 and IPv6 addresses
-   if only that device should log in. If its addresses change, update the
-   list at the Mac. This authentication limit does not replace the policy
-   or firewall checks.
-6. Run the read-only prerequisite check as your normal user:
+5. Narrow `remote_login_sources` to the iPhone's Tailscale IPv4 and IPv6
+   addresses if only that device should log in. The default accepts all
+   tailnet addresses: `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. If the
+   phone's addresses change, update the list at the Mac. This authentication
+   limit does not replace policy or firewall restrictions.
+6. Review the complete key list. Every enablement replaces all of
+   `~/.ssh/authorized_keys`; hand-added keys and Moshi Easy Pair keys not
+   listed here will be removed. From a fresh local terminal, run:
 
    ```bash
-   make remote-login-check
+   ./remote-login.sh --config "$HOME/.config/dev-machine-setup.toml"
    ```
 
-   This checks phone keys, Tailscale, and Homebrew without sudo or changes
-   to services, configuration, or keys. It uses limited Ansible check mode:
-   configuration deployment, the effective SSH settings gate, and activation
-   are skipped. A pass is **not** a full SSH configuration preview, proof
-   that enablement will succeed, or verification of policy or firewall rules.
-7. Before enabling, review the key list: each run backs up and **replaces
-   all of `~/.ssh/authorized_keys`** with these keys. Hand-added keys and
-   Moshi Easy Pair keys not in the list will be removed. Setup also limits
-   Remote Login to your account. Existing SSH or mosh sessions may be
-   interrupted, but are not reliably terminated.
-   At the Mac's local console, run:
-
-   ```bash
-   make remote-login
-   ```
-
-   Enter your sudo password if asked. Keep the connection details and
-   host key fingerprints. If the run fails, do not enable Remote Login
-   manually; fix the reported cause and rerun locally.
-8. Only after enablement succeeds and the full policy and firewall checks pass,
-   explicitly allow inbound tailnet traffic:
+   `mise run remote-login` is also available. The command checks keys,
+   Tailscale and the SSH command path before requesting sudo or changing
+   services, configuration or keys. Enter your sudo password if asked.
+   Keep the reported connection details and SSH host key fingerprints.
+   If setup fails, fix the reported cause and rerun locally. Do not enable
+   Remote Login manually in System Settings or with `launchctl` to bypass
+   a failed run.
+7. Only after enablement succeeds and the full policy and firewall checks
+   pass, manually release Shields Up:
 
    ```bash
    tailscale set --shields-up=false
    ```
 
-9. Set up the iPhone as described below. Then verify an actual iPhone
-   connection and denied connections from other devices, including LAN sources.
-   Check that unrelated Mac services are still unreachable.
-   If any result differs from the intended rules,
-   restore Shields Up and use `make remote-login-revoke` locally while you
-   fix the policy or firewall. Shields Up alone does not block LAN access.
+8. Configure the phone as described below. Verify an actual phone
+   connection, denied connections from other devices including LAN
+   sources, and that unrelated Mac services remain unreachable. Setup or
+   policy checks alone do not establish end-to-end access and isolation.
+   If any result differs from the intended rules, restore Shields Up and
+   [revoke access locally](#revoke-remote-access-including-offline) while
+   you fix the policy or firewall. Shields Up alone does not block LAN access.
 
-### Set up the iPhone
+For an optional read-only readiness check before enablement, run:
 
-1. In the Tailscale app, open Settings > VPN On Demand. Set Wi-Fi and
-   Cellular to **Always**.
-2. In each app, add a server. Use the host name that `make remote-login`
-   showed, your Mac account name, and port 22.
-3. In Moshi, keep the connection type at **Auto**.
-4. Connect. Compare the host key fingerprint with the fingerprints that
-   `make remote-login` showed. If they are different, do not continue.
-5. In Moshi's session picker, open the **Herdr** tab and tap a session to
-   attach to it. Moshi lists only running sessions. If there is none, tap
-   **Skip**, then run `herdr` to start one.
-6. In Secure ShellFish, leave the tmux option off. After you connect, run
-   `herdr` to attach to the default session, or `herdr session attach <name>`
-   for a named session.
+```bash
+mise run remote-login-check --config "$HOME/.config/dev-machine-setup.toml"
+```
+
+This checks keys, Tailscale and the SSH command path without sudo, writes
+or service changes. It does not deploy configuration, validate effective
+SSH settings, activate SSH, prove network isolation or guarantee that
+enablement will succeed.
+
+### SSH configuration restrictions and failure recovery
+
+Setup uses macOS's native `/usr/sbin/sshd` and `/usr/bin/ssh-keygen` by
+default, not Homebrew OpenSSH with its different configuration paths.
+It creates host keys if needed and configures normal post-unlock SSH to
+use keys only from `~/.ssh/authorized_keys`, for your account and the
+configured source addresses. It also sets the SSH command path for mosh
+and herdr.
+
+The server configuration must not contain any `Match` block outside the
+managed `010-remote-login.conf`. It must not set `DenyUsers`, `DenyGroups`,
+`AllowGroups`, `RefuseConnection`, `ForceCommand`, `ChrootDirectory`,
+`PermitTTY no` or `MaxSessions 0`. These rules could weaken access limits
+or block your login. Setup rejects them rather than overriding them.
+It also refuses a symlink or non-regular file at the managed configuration
+path, `/etc/ssh/sshd_config.d/010-remote-login.conf` by default.
+
+Setup disables startup and unloads the SSH listener before changing the
+configuration. Native `sshd -t` and `sshd -T` checks must confirm that sshd
+reads the managed file and that other settings do not weaken its limits
+or block your account. Only after these checks pass does setup replace
+keys and restrict the Remote Login access list to your account, removing
+nested groups too.
+
+If deployment or the effective-settings checks fail, setup restores the
+previous managed file's content, owner, group and mode, or removes the new
+file if none existed. It leaves Remote Login disabled and reports the
+original failure. If activation or the SSH port check fails, it disables
+startup and unloads the listener again. This is not a promise to undo all
+changes from the run. Correct the reported cause and rerun locally; never
+bypass the checks with manual enablement.
+
+### Connect from the iPhone
+
+1. In Tailscale, open Settings > VPN On Demand. Set Wi-Fi and Cellular to
+   **Always**.
+2. In each SSH app, add a server using the host name reported by
+   `./remote-login.sh`, your Mac account name and port 22. Select the key
+   you configured for that app.
+3. In Moshi, leave the connection type at **Auto**.
+4. Connect and compare the host key fingerprint with the fingerprints
+   reported by setup. If they differ, stop and investigate before
+   continuing.
+5. In Moshi's session picker, open **Herdr** and tap a running session.
+   If none exists, tap **Skip**, then run `herdr` to start one.
+6. In Secure ShellFish, leave the tmux option off. Run `herdr` to attach to
+   the default session, or `herdr session attach <name>` for a named session.
 
 Work inside herdr keeps running on the Mac when the phone disconnects.
+If `~/.ssh/config` uses the 1Password agent, outgoing SSH from a phone
+session, such as `git push`, waits for approval on the Mac screen.
+
+If the phone cannot connect, check Tailscale on both devices, the selected
+key and account, and the reviewed policy and firewall rules. Do not widen
+rules merely to get a connection. Investigate fingerprint mismatches
+rather than accepting a changed host key blindly.
 
 ### Keep the Mac available
 
 - Keep the Mac connected to power.
-- To use the Mac with the lid closed, start an Amphetamine session that stops
-  system sleep when the display is closed. Do not keep a closed Mac running
-  in a bag, because it can overheat.
-- After a restart, normal tailnet access needs somebody to unlock FileVault
+- For closed-lid use, start an Amphetamine session that prevents system
+  sleep with the display closed. Never leave a closed, running Mac in a
+  bag: it can overheat.
+- After a restart, normal tailnet access needs someone to unlock FileVault
   and log in locally so the Tailscale app starts. This does not mean
-  pre-unlock password SSH is unavailable on other network paths. Install
-  macOS updates when you are at the Mac.
-- Sign in to Tailscale on the Mac again before its node key expires.
-  `tailscale status --json` shows the expiry date in `Self.KeyExpiry`.
+  pre-unlock password SSH is unavailable through other network paths.
+  Install macOS updates while you are at the Mac.
+- Sign in to Tailscale again before the Mac's node key expires.
+  `tailscale status --json` reports the date in `Self.KeyExpiry`.
 
-### Add or remove phone keys
+### Replace or remove phone keys
 
-For changes that leave at least one trusted key:
+For changes that leave at least one trusted key, add or remove filenames
+in `remote_login_public_keys`, then rerun the enablement command above
+with the same configuration file from a fresh local terminal.
+It checks the revised inputs before changing access and
+interrupts the listener while validating the effective SSH configuration.
 
-1. Add or remove filenames in `remote_login_public_keys`.
-2. Run `make remote-login-check` to check the revised inputs, then
-   `make remote-login` from the local console. Enablement interrupts the
-   listener while it rechecks the effective SSH configuration.
+Each enablement replaces all of `~/.ssh/authorized_keys`. Before changing
+a differing nonempty file, it saves a backup at:
 
-Each enable run replaces `~/.ssh/authorized_keys` with the listed keys. Keys added
-by hand or by Moshi's Easy Pair are removed. Before each change to a nonempty
-file, it is backed up under
-`~/.dev-setup-backups/<timestamp>/remote-login-<previous-content-hash>/authorized_keys`.
-Backups are not active key files; do not restore a revoked phone key.
-
-To remove the final key, use `make remote-login-revoke` instead. Then remove
-its filename from `remote_login_public_keys` so a later setup cannot
-reinstall it. An empty list deliberately fails the enable command; it is
-not a revocation request. Removing a key prevents new authentication, not
-access through an already authenticated SSH or mosh session.
-
-### Turn off remote access
-
-Setting `manage_remote_login` to false does not undo an earlier run. At the
-local console, run:
-
-```bash
-make remote-login-revoke
+```text
+~/.dev-setup-backups/<timestamp>/remote-login-<previous-content-hash>/authorized_keys
 ```
 
-This Mac-only command opts in with `revoke_remote_login=true` and the
-`remote-login-revoke` tag. It disables SSH startup, unloads the listener
-if present, and backs up then clears the invoking user's
-`~/.ssh/authorized_keys`. It retains the managed SSH configuration. It needs
-sudo and the existing Ansible prerequisites, but not Homebrew, phone keys,
-or a working Tailscale connection. Neither full setup nor a false revoke
-flag revokes access.
+Backups are not active key files. Never restore a revoked phone key.
+Hand-added keys and Moshi Easy Pair keys disappear unless included in the
+configured list.
 
-If Tailscale is available, also run `tailscale set --shields-up=true`.
-Revocation itself does not change Shields Up or the control-server policy.
+To remove the final key, [revoke remote access](#revoke-remote-access-including-offline).
+Then remove its filename from `remote_login_public_keys` so later setup
+cannot reinstall it. An empty key list deliberately fails enablement; it does
+not request revocation. Removing a key blocks new authentication, not
+access through an existing SSH or mosh session.
+
+### Revoke remote access, including offline
+
+Setting `steps.remote-login` to false does not undo earlier enablement.
+Revocation needs the bootstrapped mise/Python command interface and sudo,
+but no Homebrew executable, phone keys or working Tailscale connection.
+From a fresh local terminal as your normal user, run:
+
+```bash
+mise run remote-login-revoke --config "$HOME/.config/dev-machine-setup.toml"
+```
+
+This explicitly sets `revoke_remote_login=true`, disables SSH startup,
+unloads the listener if present, and backs up then clears your account's
+`~/.ssh/authorized_keys`. It retains the managed SSH server configuration.
+Revocation takes precedence if both enablement and revocation are selected.
+Neither normal full setup nor a false revoke flag revokes access.
+
+If Tailscale is available, also block inbound tailnet traffic:
+
+```bash
+tailscale set --shields-up=true
+```
+
+Revocation does not change Shields Up or the control-server policy.
 **Listener shutdown and key removal do not end all existing SSH or mosh
-sessions.** Use the incident steps below if an active session is untrusted.
+sessions.** Follow the incident steps if an active session is untrusted.
 
-### If the iPhone is lost or compromised
+### Respond to a lost or compromised phone
 
-1. Revoke or remove the iPhone device in the tailnet control server. Ask its
-   administrator if you cannot do this yourself. Do not rely on this alone
-   to terminate existing Mac sessions.
-2. At the Mac's local console, run `make remote-login-revoke`. If available,
-   also run `tailscale set --shields-up=true`. Remove the lost phone's key
-   filenames from `remote_login_public_keys`.
-3. Identify established SSH connections, mosh UDP listeners, and their
-   process trees before terminating anything:
+1. Revoke or remove the iPhone in the tailnet control server. Ask its
+   administrator if you cannot do this yourself. Do not rely on device
+   removal alone to terminate existing Mac sessions.
+2. At the Mac's local console, run the revocation command above. If
+   Tailscale is available, also run `tailscale set --shields-up=true`.
+   Remove the lost phone's key filenames from `remote_login_public_keys`.
+3. Before terminating anything, identify established SSH connections,
+   mosh UDP listeners and their process trees:
 
    ```bash
    sudo lsof -nP -iTCP -sTCP:ESTABLISHED
@@ -476,14 +831,14 @@ sessions.** Use the incident steps below if an active session is untrusted.
    ps ax -o pid=,ppid=,user=,tty=,command=
    ```
 
-   Match remote addresses and ports to the affected account's `sshd` child
-   processes and `mosh-server` processes. Inspect their child shells and
-   jobs too; do not assume stopping one parent ends every child. If the
-   connection cannot be attributed, treat all remote sessions for that
+   Match remote addresses and ports to the affected account's `sshd`
+   child processes and `mosh-server` processes. Inspect their child shells
+   and jobs too: stopping one parent may not end every child. If you
+   cannot attribute the connection, treat all remote sessions for that
    account as suspect and review them individually.
 4. For each confirmed remote-session PID, verify it immediately before
-   signalling it. Replace `<PID>` below with that numeric PID; do not paste
-   the placeholder literally:
+   signalling it. Replace `<PID>` with the numeric PID; do not paste the
+   placeholder literally:
 
    ```bash
    ps -p <PID> -o pid=,ppid=,user=,tty=,command=
@@ -491,172 +846,59 @@ sessions.** Use the incident steps below if an active session is untrusted.
    ps -p <PID> -o pid=,ppid=,user=,tty=,command=
    ```
 
-   Repeat the connection and process listings to confirm that the affected
-   transports have gone. If a process remains, inspect it again before
-   considering `sudo kill -KILL <PID>`; forced termination can lose work.
-   Do not kill all processes for your account, all terminal sessions, or
-   herdr wholesale. Herdr work can survive a transport disconnect. Inspect
-   suspect work separately and preserve unrelated local sessions.
+   Repeat the connection and process listings to confirm that the
+   affected transports have gone. If a process remains, inspect it again
+   before considering `sudo kill -KILL <PID>`: forced termination can
+   lose work. Do not kill all account processes, terminal sessions or
+   herdr wholesale. Herdr work can survive transport disconnection;
+   inspect suspect work separately and preserve unrelated local sessions.
 5. Review what the compromised session could access, including credentials
-   and jobs it started. Rotate affected credentials where needed. Re-enable
-   access only with trusted replacement keys, reviewed policy/firewall
-   rules, and a successful `make remote-login` run; then release Shields Up
-   manually as in setup.
+   and jobs it started. Rotate affected credentials where needed.
+   Re-enable access only with trusted replacement keys, reviewed policy
+   and firewall rules, and a successful `./remote-login.sh` run. Then
+   release Shields Up manually and repeat the real connection and denial
+   checks described above.
 
-### Remote Login troubleshooting
+## Check the setup files
 
-- **Wrong platform, root, or missing Ansible:** use a normal macOS account
-  and complete bootstrap. Do not run the Make commands with `sudo`; enable
-  and revoke request it when needed.
-- **Local-console refusal:** move to a local terminal on the Mac. Do not
-  bypass the SSH environment check. Read-only preflight can run remotely.
-- **Preflight fails:** correct the reported phone-key, Homebrew, or Tailscale
-  prerequisite, then rerun `make remote-login-check`. Each key file must
-  contain one public key line, without authorised-key options.
-- **Enablement fails after preflight passed:** preflight does not run the
-  effective SSH settings gate. Review the error and the
-  [security limits](#security-limits), fix the cause, and rerun locally.
-  Do not bypass the gate by enabling SSH manually.
-- **The phone cannot connect:** check Tailscale on both devices, the selected
-  key and account, and the reviewed policy/firewall rules. Do not widen
-  rules merely to get a connection. A host fingerprint mismatch must be
-  investigated before connecting.
+The checks do not install packages or change machine settings. They use
+temporary directories and substitute privileged commands. On macOS, they
+also validate temporary SSH configurations with native `sshd -T`. These
+checks do not prove that every package installs, or that a phone can connect
+while other network paths remain blocked.
 
-### Security limits
+Complete bootstrap first. Checks require Python 3.11 or newer and
+[Bats](https://github.com/bats-core/bats-core), the Bash Automated Testing
+System. Both Mac profiles include `bats-core`. On Ubuntu, or before Mac CLI
+installation, install it explicitly through Homebrew:
 
-- The SSH server configuration can contain no `Match` block except the one
-  in `010-remote-login.conf`. It also cannot set `DenyUsers`, `DenyGroups`,
-  `AllowGroups`, `RefuseConnection`, `ForceCommand`, `ChrootDirectory`,
-  `PermitTTY no`, or `MaxSessions 0`. Another `Match` block could add a login
-  that the limits do not cover, and those settings could stop your own
-  login. `make remote-login` stops when it finds them.
-- The key-only promise applies to normal post-unlock SSH. Review the
-  FileVault, wildcard-listener, Bonjour, and firewall warnings
-  [before setup](#before-you-start).
-- If `~/.ssh/config` sends SSH to the 1Password agent, outgoing SSH from an
-  iPhone session, for example `git push`, waits for approval on the Mac
-  screen.
+```bash
+brew install bats-core
+```
 
-### What setup changes
+Run the full checks, or the shell suite alone:
 
-`make remote-login` performs these steps and stops on failure:
+```bash
+mise run check
+mise run check-shell
+```
 
-1. Checks Homebrew, that the phone key list is nonempty, that each file holds
-   one public key line without options, and that Tailscale is connected.
-2. Creates SSH host keys if needed.
-3. Disables SSH startup and unloads its listener if loaded. Rejects a symlink
-   or non-regular file at `/etc/ssh/sshd_config.d/010-remote-login.conf` and
-   saves the previous regular file's content, owner, group, and mode, if
-   present.
-4. Installs the managed configuration. This limits normal post-unlock SSH
-   to key logins for your account from `remote_login_sources`, with keys only in
-   `~/.ssh/authorized_keys`. It also sets the SSH command `PATH` so mosh and
-   herdr can be found.
-5. Validates the configuration and effective SSH settings. If deployment
-   or this gate fails, restores the previous configuration, or removes the
-   new file if none existed, and leaves Remote Login disabled. The original
-   failure is reported.
-6. Only after the gate succeeds, backs up and replaces
-   `~/.ssh/authorized_keys` with the listed phone keys, and sets the Remote
-   Login access list to your account only.
-7. Enables Remote Login and checks the SSH port. An activation or port-check
-   failure disables startup and unloads the listener again.
-8. Shows connection details and SSH host key fingerprints, and warns if
-   `mosh-server` or `herdr` is not on the SSH `PATH`.
+Without mise, use `python3 -B scripts/check.py` or `bats tests/shell`.
+The full command fails if Bats is missing; it does not silently skip the
+shell suite.
 
-If any step fails, fix the reported cause and rerun from the local console.
-Do not enable Remote Login manually in System Settings or with `launchctl`
-to bypass a failed run.
+## Troubleshoot setup
 
-## Implementation and validation
+| Symptom | Action |
+|---|---|
+| Unsupported platform or root refusal | Use native ARM64 macOS or Ubuntu as a normal user with sudo access. Do not bypass the guard. |
+| Missing mise or helper Python | Complete `./install.sh --bootstrap-only`, then start a fresh login shell. |
+| Profile conflict | Make the command, `DEVSETUP_PROFILE` and supplied files agree. |
+| A local setting is ignored | Pass its file with `--config` on every relevant command. Check file order and platform tables. |
+| Dotfiles update refused | Save local work, resolve divergent history, or correct the configured repository. Do not discard work to bypass the check. |
+| Shell still runs old hooks | Start a fresh login shell with `exec zsh -l`. Sourcing `.zshrc` does not remove previously registered hooks. |
+| Node transfer failed | Preserve the old runtime and pending state. Correct the error, then rerun with the same configuration. |
+| Package or App Store installation failed | Review the reported package error or sign in to the App Store, then retry the affected component. |
+| Remote Login refuses a session or fails its checks | Use a fresh local Mac terminal and follow the remote access guide. Never bypass a failed run by enabling SSH manually. |
 
-`install.sh` detects macOS or Ubuntu and sources the corresponding bootstrap
-script. Shared Homebrew setup lives in `scripts/bootstrap-homebrew.sh`.
-Bootstrap owns prerequisites; `local.yaml` owns configuration and packages.
-`update.yaml` owns maintenance. Unsupported operating systems and profiles
-are rejected before setup tasks run.
-
-`ansible/tasks/platform.yaml` selects package layers for both playbooks.
-Shared tasks must not call Mac-only commands. Mac tasks live under
-`ansible/tasks/mac/` and their imports are guarded in `local.yaml`.
-
-`make check` does not install packages or change your shell/SSH configuration.
-It uses temporary directories and fake commands to check all four OS/profile
-combinations, SSH/dotfiles prompt answers and flags, opt-outs, invalid inventories,
-headless sudo, successive SSH backups, Node ownership, error propagation, Remote
-Login routing and missing phone keys, and, on macOS, the effective Remote Login
-SSH server settings.
-These checks do not replace a real
-installation on a disposable machine.
-
-Validation performed on 2026-09-21:
-
-- Ubuntu 24.04 ARM64 in Docker: fresh bootstrap and the complete shared CLI
-  inventory through `./install.sh work`, without a terminal and with dotfiles
-  disabled (before the default changed); personal CLI
-  rerun, update flow, and configured shell/tool startup checks.
-- macOS: non-installing checks, inventory parsing, and Ansible syntax checks.
-- Simulated failures: invalid profiles/inventories, missing sudo authorization,
-  failed Node installation, runtime update errors, and unsafe Node unlinking.
-- SSH opt-in follow-up: terminal prompt/flag checks, simulated Ansible runs
-  on both OSes, and Ubuntu startup with inert bootstrap commands; live
-  1Password authentication has not been tested.
-- Dotfiles default/opt-out: routing and terminal prompt checks passed; the
-  external dotfiles have not been runtime-tested on Linux.
-
-Validation performed on 2026-10-06, before the security-review fixes:
-
-- `make check` passed. Each new check failed against a copy of the
-  repository with one safeguard removed: the macOS guard, the password
-  setting, the `Match all` block, `PubkeyAuthentication yes`, the `Match`
-  block check, the account-rule check, or the `RefuseConnection` check.
-- A check-mode run against the real Mac, without root, showed the planned
-  changes and changed nothing.
-- The effective-settings check passed on a copy of macOS SSH configuration.
-  With the `Match all` block, weaker global settings in other
-  files (passwords, key logins turned off, extra key files, a user CA,
-  `SetEnv`, `AllowUsers`) did not change the effective settings. Another
-  `Match` block, a configuration that does not read the managed file,
-  `DenyUsers`, and `RefuseConnection yes` each stopped the run.
-- The key check accepted Ed25519 and ECDSA P-256 keys. It refused key
-  options, extra lines, two keys, private keys, empty files, and truncated
-  keys.
-- Throwaway copies of macOS `sshd` on loopback ports refused passwords,
-  non-tailnet sources, and keys outside `~/.ssh/authorized_keys`. Through
-  `SetEnv PATH`, SSH commands found `mosh-server` and the same
-  `~/.local/bin/herdr` that the interactive shell uses.
-- A real `make remote-login` run with root, the `launchctl` and access-list
-  steps, and connections from an iPhone have not been tested. This history
-  does not establish the later rollback or revocation behaviour.
-
-Security-review follow-up validation on 2026-10-06:
-
-- `make check` passed, including offline final-key revocation, check-mode
-  safety, partial activation failure, restoration of previous configuration,
-  removal of rejected first-install configuration, and refusal to replace
-  configuration when listener shutdown fails.
-- An isolated `make remote-login-revoke` run used a temporary home directory,
-  a generated public key, and a stateful `launchctl` substitute. It cleared
-  the key file, preserved its previous content in a backup, and left the
-  service model disabled and unloaded.
-- The production activation block recovered from a simulated partial
-  `bootstrap` failure. It reported failure and confirmed that the service
-  model was disabled and unloaded.
-- The operator-workflow checks passed: valid-key preflight preserved existing
-  access in a temporary home, and direct Ansible enable/revoke runs refused
-  detected SSH sessions before touching service state or keys.
-- Command smoke checks confirmed local-console refusals, non-Mac rejection,
-  and an actionable empty-key preflight failure without sudo. No host
-  activation or revocation was performed.
-- These checks did not call real privileged `launchctl` operations or
-  establish firewall, tailnet, FileVault boot, or iPhone behaviour.
-
-Fresh macOS installation, GUI/App Store behavior, Ubuntu x86_64, and other
-Ubuntu releases have not been runtime-tested. Repeat the disposable-machine
-checks after changing package inventories or supported platforms.
-
-Repository maintenance instructions live in [AGENTS.md](AGENTS.md).
-
-[Dotfiles](https://github.com/mintuz/.dotfiles) ·
-[Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux) ·
-[1Password SSH agent](https://developer.1password.com/docs/ssh)
+Repository maintenance guidance is in [AGENTS.md](AGENTS.md).

@@ -1,2 +1,0 @@
-# Remote shell sessions from a phone (make remote-login)
-brew "mosh"

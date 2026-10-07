@@ -1,4 +1,0 @@
-# macOS management and Xcode integration
-brew "mas"
-brew "mole"
-brew "xcode-build-server"

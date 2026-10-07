@@ -1,9 +1,0 @@
-ssh_agent_socket: "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-manage_ssh_config: false
-install_dotfiles: true
-pnpm_home: "{{ ansible_facts['env']['HOME'] }}/Library/pnpm"
-shell_path: /bin/zsh
-manage_remote_login: false
-revoke_remote_login: false
-remote_login_sshd_file: /etc/ssh/sshd_config.d/010-remote-login.conf
-tailscale_cli: /Applications/Tailscale.app/Contents/MacOS/Tailscale
