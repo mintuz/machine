@@ -7,7 +7,6 @@
 "brew-cask:bettertouchtool" = "latest"
 "brew-cask:lunar" = "latest"
 "brew-cask:clop" = "latest"
-"brew-cask:gas-mask" = "latest"
 "brew-cask:rectangle-pro" = "latest"
 "brew-cask:alt-tab" = "latest"
 "brew-cask:popclip" = "latest"
@@ -23,7 +22,6 @@
 "brew-cask:little-snitch" = "latest"
 "brew-cask:micro-snitch" = "latest"
 "brew-cask:1password" = "latest"
-"brew-cask:authy" = "latest"
 
 # Terminals and developer tools
 "brew-cask:httpie" = "latest"

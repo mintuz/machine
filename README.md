@@ -239,6 +239,13 @@ the shared Mac GUI inventory as `tailscale-app`, not the App Store
 inventory. Skipping `app-store` does not skip it; skipping `gui` does.
 Tailscale sign-in and any required macOS extension approval remain manual.
 
+Authy and Gas Mask are no longer in the installation inventory. Authy is
+absent from the official cask catalogue, and
+[`gas-mask`](https://formulae.brew.sh/cask/gas-mask) is disabled because it
+fails Gatekeeper checks. This removal leaves existing installations
+untouched. Setup does not bypass Gatekeeper or use another tap to install
+these unavailable packages.
+
 ## Configuration
 
 `defaults.toml` contains shared preferences and `[mac]` / `[linux]` defaults.
