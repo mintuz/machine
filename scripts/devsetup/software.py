@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import shlex
@@ -725,14 +726,66 @@ def _gui(config, shell):
     entries = [entry for entry in selected_entries(config) if entry.kind in ("gui", "gui-optional")]
     brew = _require_brew(config)
     env = dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1")
+    current = _self_updated_casks(shell, brew, env)
     issues = []
     for entry in entries:
         # A Caskroom record without an installed version is not upgradeable.
         installed, _ = shell.query([brew, "list", "--cask", "--versions", entry.name], env=env)
+        if installed == 0 and entry.name in current:
+            print(f"{entry.name}: the app is already at version {current[entry.name]} or newer; "
+                  "no Homebrew upgrade needed.", flush=True)
+            continue
         command = (["upgrade", "--cask", "--greedy"] if installed == 0 else ["install", "--cask", "--adopt"])
         if shell.run([brew, *command, entry.name], env=env) != 0:
             issues.append(f"GUI app {entry.name}: {_cask_advice(config, shell, brew, env, entry.name)}")
     return issues
+
+
+def _self_updated_casks(shell, brew, env):
+    """Map installed cask names to Homebrew's version when every app is that version or newer.
+
+    Apps that update themselves can be newer than Homebrew's record. A greedy upgrade
+    would download Homebrew's version and replace them, so setup leaves them alone.
+    Versions that are not plain dotted numbers are never compared.
+    """
+    code, output = shell.query([brew, "info", "--cask", "--json=v2", "--installed"], env=env)
+    try:
+        casks = json.loads(output)["casks"] if code == 0 else []
+    except (ValueError, KeyError, TypeError):
+        casks = []
+    current = {}
+    for cask in casks if isinstance(casks, list) else []:
+        if not isinstance(cask, dict) or not isinstance(cask.get("version"), str):
+            continue
+        # Homebrew appends build identifiers after a comma, for example "4.94.0,241994".
+        version = cask["version"].split(",")[0]
+        wanted = _numeric_version(version)
+        apps = [_app_version(target) for _, target in _cask_apps(cask)]
+        if wanted and apps and all(app and app >= wanted for app in apps):
+            current.update({name: version for name in (cask.get("token"), cask.get("full_token"))
+                            if isinstance(name, str)})
+    return current
+
+
+def _app_version(app):
+    try:
+        with open(app / "Contents/Info.plist", "rb") as handle:
+            info = plistlib.load(handle)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+    version = info.get("CFBundleShortVersionString") if isinstance(info, dict) else None
+    return _numeric_version(version) if isinstance(version, str) else None
+
+
+def _numeric_version(text):
+    """Return dotted integers without trailing zeros, so 6.5 equals 6.5.0; otherwise None."""
+    parts = text.strip().split(".")
+    if not all(part.isdigit() for part in parts):
+        return None
+    numbers = [int(part) for part in parts]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    return tuple(numbers)
 
 
 def _cask_advice(config, shell, brew, env, name):

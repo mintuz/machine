@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -119,6 +120,11 @@ if [ "$1" = list ]; then
     find "$FAKE_PREFIX/Caskroom/$4" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | grep -q .
   else [ -d "$FAKE_PREFIX/Caskroom/$3" ]; fi
   exit $?
+fi
+if [ "$1" = info ]; then
+  printf '%s\\n' "$line" >> "$FAKE_LOG"
+  case " $* " in *" --installed "*) printf '%s\\n' "${FAKE_BREW_INFO:-}" ;; esac
+  exit 0
 fi
 if [ "$1" = unlink ] && [ "$2" = node ]; then rm -rf "$FAKE_PREFIX/var/homebrew/linked/node"; fi"""
 # Resolve the managed pin and registered installs; unresolved selectors fall back
@@ -408,7 +414,7 @@ for platform in ("mac", "linux"):
         before = snapshot(machine.base)
         for action in ("cli", "gui", "app-store", "node", "update"):
             machine.run(action, check=True)
-        assert all(call.startswith(("ollama list", "brew list ", "mas list", "mas info "))
+        assert all(call.startswith(("ollama list", "brew list ", "brew info ", "mas list", "mas info "))
                    for call in machine.calls()), machine.calls()
         assert snapshot(machine.base) == before
 print("PASS: check mode runs no installers and writes no files")
@@ -513,6 +519,23 @@ with tempfile.TemporaryDirectory() as directory:
     assert "brew upgrade --cask --greedy owned" in calls
     assert calls[-2:] == ["brew install --cask --adopt bad", "brew info --cask --json=v2 bad"]
     assert [issue.split(": ", 1)[0] for issue in machine.issues] == ["GUI app bad"], machine.issues
+# An app that updated itself to Homebrew's version or newer is not replaced by a greedy
+# upgrade; an older app, or a version that is not plain dotted numbers, still upgrades.
+with tempfile.TemporaryDirectory() as directory:
+    machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
+    casks = []
+    for name, app_version, cask_version in (("owned", "2.0.0", "2.0,123"), ("bad", "1.9", "2.0"),
+                                            ("fresh", "3.0", "2.0b1")):
+        (machine.prefix / f"Caskroom/{name}/1.0").mkdir(parents=True)
+        app = machine.base / f"Applications/{name}.app"
+        with open(write(app / "Contents/Info.plist", ""), "wb") as handle:
+            plistlib.dump({"CFBundleShortVersionString": app_version}, handle)
+        casks.append({"token": name, "full_token": name, "version": cask_version,
+                      "artifacts": [{"app": [f"{name}.app"], "target": str(app)}]})
+    output = machine.run("gui", FAKE_BREW_INFO=json.dumps({"casks": casks}))
+    upgrades = [call for call in machine.calls() if call.startswith("brew upgrade")]
+    assert upgrades == ["brew upgrade --cask --greedy fresh", "brew upgrade --cask --greedy bad"], upgrades
+    assert "owned: the app is already at version 2.0 or newer" in output, output
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
     output = machine.run("app-store", FAKE_FAIL="mas get 111|mas install 111|mas get 222|mas info 444",

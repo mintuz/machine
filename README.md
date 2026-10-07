@@ -491,7 +491,11 @@ not stop the later steps. At the end, setup lists each failed item with its
 probable cause and the next action, then returns failure. Setup skips App
 Store apps that are already installed. It reports an App Store ID that has no
 Mac app instead of trying to install it. Removing an inventory entry does not
-uninstall an existing package.
+uninstall an existing package. Before a greedy cask upgrade, setup compares
+each app's own version with the version Homebrew offers. If every app of the
+cask is already at that version or newer, for example because the app updated
+itself, setup skips the upgrade so that Homebrew does not replace the app.
+Setup upgrades as before when a version is not plain dotted numbers.
 
 ### Review package trust
 
