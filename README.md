@@ -202,8 +202,9 @@ casks have Mac selectors and separate Linux tool providers where needed.
 A personal Ubuntu-only tool belongs in `packages/linux/personal/cli.toml`.
 
 Required CLI failures stop setup. Optional CLI, GUI and App Store installation
-failures are reported while setup continues. Profile changes do not uninstall
-anything. `tlrc` replaces the disabled `tldr` formula and provides the same
+failures are reported while setup continues. Profile changes and inventory
+removals do not uninstall existing packages. `tlrc` replaces the disabled
+`tldr` formula and provides the same
 `tldr` command. Ansible and nvm leave the inventory. Node, pnpm, Yarn, Deno,
 Go and xcodes use mise; xcodes uses its published release rather than a
 third-party Homebrew formula. The other native package declarations remain.

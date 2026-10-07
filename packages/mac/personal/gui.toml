@@ -8,9 +8,6 @@
 # Communication
 "brew-cask:discord" = "latest"
 
-# Hardware and gaming
-"brew-cask:steelseries-gg" = "latest"
-
 # Media
 "brew-cask:vlc" = "latest"
 "brew-cask:downie" = "latest"
