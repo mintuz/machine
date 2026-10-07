@@ -118,9 +118,9 @@ Delegate installation to the external dotfiles repository's `install.sh`.
 Keep portable shell behaviour and agent skills out of this repository. Changes
 to another repository need explicit authorisation and a separate linked PR;
 never modify a dirty live dotfiles checkout incidentally. The default dotfiles
-revision pins the coordinated portable-mise change. Refuse dirty checkouts,
-use fast-forward-only branch updates, and honour exact revision pins. Preserve
-local branch commits. Refuse to leave unreferenced detached commits behind
+revision tracks `master`: fetch and fast-forward before running its installer
+on each enabled setup. Honour an explicit revision override. Refuse dirty
+checkouts and preserve local branch commits. Refuse to leave unreferenced detached commits behind
 until the user saves them on a branch. Back up managed conflict paths before
 replacing them.
 For an existing checkout, reject an origin that differs from the configured

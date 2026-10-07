@@ -329,16 +329,13 @@ remain untouched.
 ## Dotfiles and runtimes
 
 Dotfiles and agent skills remain separate repositories. This repository
-delegates dotfiles installation to that repository's `install.sh`. The
-default revision is an exact commit of the coordinated portable-mise change,
-not a floating branch that could restore nvm activation.
+delegates dotfiles installation to that repository's `install.sh`.
+By default, each enabled dotfiles run fetches and fast-forwards the checkout
+to the latest `master` branch before running the installer. There is no
+fixed commit pin in `defaults.toml`.
 
-Release dependency: merge
-[the portable dotfiles PR](https://github.com/mintuz/.dotfiles/pull/8) first.
-Use a merge commit or fast-forward so
-`01fe6340f41bea696e168196150a262dc499061c` remains reachable from `master`.
-If that PR is squashed or rebased, update `dotfiles_version` to the resulting
-commit and verify a fresh clone before releasing this repository.
+Explicit `dotfiles_version` overrides are still honoured. Remove any old
+commit override from your local configuration to follow `master`.
 
 Setup refuses a dirty dotfiles checkout. Branch updates are fast-forward
 only. An exact revision checks out that commit without deleting local

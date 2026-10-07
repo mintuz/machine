@@ -403,7 +403,7 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         conflict = home / ".agents/.skill-lock.json"
         conflict.parent.mkdir()
         conflict.write_text("local lock")
-        config.update(dotfiles_repo=str(upstream), dotfiles_version="master")
+        config.update(dotfiles_repo=str(upstream))
         host.run("dotfiles", config)
 
         def refused_install(message):
