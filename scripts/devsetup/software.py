@@ -73,8 +73,11 @@ class Entry:
         return f"{self.key}@{self.version}"
 
 
-def run(action: str, config: dict, *, check: bool = False) -> None:
-    """Run one software action. check=True prints commands without running them."""
+def run(action: str, config: dict, *, check: bool = False) -> list[str]:
+    """Run one software action. check=True prints commands without running them.
+
+    Return the non-fatal problems that let later setup steps continue.
+    """
     handlers = {
         "packages": _packages,
         "cli": _cli,
@@ -87,7 +90,7 @@ def run(action: str, config: dict, *, check: bool = False) -> None:
         raise RuntimeError(f"Unknown software action: {action}")
     if config.get("platform") not in MISE_OS or config.get("profile") not in ("personal", "work"):
         raise RuntimeError("Software setup needs platform mac|linux and profile personal|work.")
-    handlers[action](config, _Shell(config, check))
+    return handlers[action](config, _Shell(config, check)) or []
 
 
 class _Shell:
@@ -348,11 +351,6 @@ def _bundle(shell, brew, entries):
 
 def _install_tools(config, shell, entries):
     return shell.run([_mise(config), "install", *(entry.spec for entry in entries)])
-
-
-def _report(title, failures):
-    if failures:
-        print(f"{title}: {', '.join(failures)}. See the errors above.", flush=True)
 
 
 def _runtime_entries(config):
@@ -698,15 +696,20 @@ def _cli(config, shell):
         if _install_tools(config, shell, tools) != 0:
             raise RuntimeError("Required mise tools failed to install. See the mise output above.")
         record_tools(config, shell, {entry.key: entry.version for entry in tools})
-    failures = []
+    issues = []
     for entry in optional:
         failed = (_install_tools(config, shell, [entry]) != 0 if entry.is_tool
                   else _bundle(shell, brew, [entry]) != 0)
         if failed:
-            failures.append(entry.key)
+            issues.append(f"Optional CLI package {entry.key}: installation failed. Read the output "
+                          f"above, then run {_rerun(config, 'cli')}.")
         elif entry.is_tool:
             record_tools(config, shell, {entry.key: entry.version})
-    _report("Optional CLI failures", failures)
+    return issues
+
+
+def _rerun(config, action):
+    return f"`mise run {action} --profile {config['profile']}`"
 
 
 def _remove_disabled_tldr(config, shell, brew):
@@ -718,23 +721,72 @@ def _remove_disabled_tldr(config, shell, brew):
 def _gui(config, shell):
     if config["platform"] != "mac":
         print("GUI applications are installed only on macOS; skipping.")
-        return
+        return []
     entries = [entry for entry in selected_entries(config) if entry.kind in ("gui", "gui-optional")]
     brew = _require_brew(config)
     env = dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1")
-    failures = []
+    issues = []
     for entry in entries:
-        installed, _ = shell.query([brew, "list", "--cask", entry.name], env=env)
+        # A Caskroom record without an installed version is not upgradeable.
+        installed, _ = shell.query([brew, "list", "--cask", "--versions", entry.name], env=env)
         command = (["upgrade", "--cask", "--greedy"] if installed == 0 else ["install", "--cask", "--adopt"])
         if shell.run([brew, *command, entry.name], env=env) != 0:
-            failures.append(entry.name)
-    _report("GUI cask failures", failures)
+            issues.append(f"GUI app {entry.name}: {_cask_advice(config, shell, brew, env, entry.name)}")
+    return issues
+
+
+def _cask_advice(config, shell, brew, env, name):
+    """Explain a failed cask change from read-only Homebrew metadata and app paths."""
+    rerun = _rerun(config, "gui")
+    code, output = shell.query([brew, "info", "--cask", "--json=v2", name], env=env)
+    try:
+        cask = json.loads(output)["casks"][0] if code == 0 else None
+    except (ValueError, KeyError, IndexError, TypeError):
+        cask = None
+    if not isinstance(cask, dict):
+        return f"Homebrew cannot read this cask. Check its name in packages/, then run {rerun}."
+    advice = []
+    for state, prefix in (("disabled", "disable"), ("deprecated", "deprecation")):
+        if cask.get(state):
+            reason = cask.get(f"{prefix}_reason")
+            replacement = (cask.get(f"{prefix}_replacement_cask")
+                           or cask.get(f"{prefix}_replacement_formula"))
+            advice.append(f"Homebrew has {state} this cask" + (f" ({reason})" if reason else "") + "."
+                          + (f" Replace it with {replacement} in packages/." if replacement
+                             else " Remove it from packages/."))
+            break
+    installed = cask.get("installed")
+    token = cask.get("token") or name.rsplit("/", 1)[-1]
+    for source, target in _cask_apps(cask) if isinstance(installed, str) else ():
+        # Homebrew links each installed app here. An upgrade moves the old app to this
+        # path and stops if a real copy remains from an earlier failed upgrade.
+        backup = brew_prefix(config) / "Caskroom" / token / installed / source
+        if backup.exists() and not backup.is_symlink():
+            advice.append(f"An earlier failed upgrade left a backup at '{backup}'. Make sure "
+                          f"'{target}' opens, remove the backup, then run {rerun}.")
+        elif not target.exists():
+            advice.append(f"Homebrew records version {installed}, but '{target}' is missing. "
+                          f"Run `brew uninstall --cask --force {name}`, then run {rerun}.")
+    if not advice:
+        advice.append("Homebrew did not finish. Read its output above. If a download failed, "
+                      f"check the network connection, then run {rerun}.")
+    return " ".join(advice)
+
+
+def _cask_apps(cask):
+    """Yield (source name, installed path) for each app artifact in Homebrew's cask JSON."""
+    for artifact in cask.get("artifacts") or []:
+        apps = artifact.get("app") if isinstance(artifact, dict) else None
+        if isinstance(apps, list) and apps and isinstance(apps[0], str):
+            source = Path(apps[0]).name
+            target = artifact.get("target")
+            yield source, Path(target) if isinstance(target, str) else Path("/Applications", source)
 
 
 def _app_store(config, shell):
     if config["platform"] != "mac":
         print("Mac App Store apps are installed only on macOS; skipping.")
-        return
+        return []
     entries = [entry for entry in selected_entries(config) if entry.kind == "app-store"]
     mas = shell.which("mas")
     if not mas:
@@ -743,13 +795,24 @@ def _app_store(config, shell):
             raise RuntimeError("Could not install the mas CLI needed for App Store apps.")
         mas = shell.which("mas") or str(brew_prefix(config) / "bin/mas")
     shell.run(["mdimport", "/Applications"])
+    # Installed apps need no App Store lookup, so apps removed from sale stay valid.
+    code, output = shell.query([mas, "list"])
+    installed = {line.split()[0] for line in output.splitlines() if line.split()} if code == 0 else set()
     sudo = ["sudo", "-A"] if shell.env.get("SUDO_ASKPASS") else ["sudo"]
-    failures = []
+    rerun = _rerun(config, "app-store")
+    issues = []
     for entry in entries:
-        if shell.run([*sudo, mas, "get", entry.name]) != 0:
-            if shell.run([*sudo, mas, "install", entry.name]) != 0:
-                failures.append(entry.label)
-    _report("App Store installation failures", failures)
+        if entry.name in installed:
+            print(f"{entry.label} is already installed.", flush=True)
+        elif code == 0 and shell.query([mas, "info", entry.name])[0] != 0:
+            issues.append(f"App Store app {entry.label}: the App Store has no Mac app with this ID. "
+                          "Make sure that the ID is for the Mac app, not the iPhone or iPad app, "
+                          "that the app is still for sale, and that this Mac can reach the App Store.")
+        elif (shell.run([*sudo, mas, "get", entry.name]) != 0
+              and shell.run([*sudo, mas, "install", entry.name]) != 0):
+            issues.append(f"App Store app {entry.label}: mas cannot install it. Make sure that you "
+                          f"are signed in to the App Store, then run {rerun}.")
+    return issues
 
 
 def _node(config, shell):
@@ -765,15 +828,15 @@ def _node(config, shell):
         if _install_tools(config, shell, required) != 0:
             raise RuntimeError("Required npm-backed mise tools failed to install.")
         record_tools(config, shell, {entry.key: entry.version for entry in required})
-    failures = []
+    issues = []
     for entry in providers:
         if entry.kind != "cli-optional":
             continue
         if _install_tools(config, shell, [entry]) != 0:
-            failures.append(entry.key)
+            issues.append(f"Optional npm-backed CLI {entry.key}: installation failed. Read the "
+                          f"output above, then run {_rerun(config, 'node')}.")
         else:
             record_tools(config, shell, {entry.key: entry.version})
-    _report("Optional npm-backed CLI failures", failures)
     if config["platform"] == "linux":
         for name in (".bashrc", ".zshrc"):
             ensure_block(Path(config["home"]) / name, SHELL_BLOCK,
@@ -789,6 +852,7 @@ def _node(config, shell):
         if shell.run(command, env=env) != 0:
             raise RuntimeError(f"Installing the pnpm global package {package} failed.")
     _retire_brew_node(config, shell)
+    return issues
 
 
 def _outdated_casks(shell, brew, env):

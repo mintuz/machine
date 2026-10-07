@@ -113,7 +113,11 @@ if [ "$1" = list ]; then
     if [ "$2" = --formula ]; then printf '%s\\n' "$FAKE_BREW_FORMULAE"; else printf '%s\\n' "$FAKE_BREW_CASKS"; fi
     exit 0
   fi
-  if [ "$2" = --formula ]; then [ -d "$FAKE_PREFIX/Cellar/$3" ]; else [ -d "$FAKE_PREFIX/Caskroom/$3" ]; fi
+  if [ "$2" = --formula ]; then [ -d "$FAKE_PREFIX/Cellar/$3" ]
+  elif [ "$3" = --versions ]; then
+    # Homebrew reports a cask as installed only when a version directory exists.
+    find "$FAKE_PREFIX/Caskroom/$4" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | grep -q .
+  else [ -d "$FAKE_PREFIX/Caskroom/$3" ]; fi
   exit $?
 fi
 if [ "$1" = unlink ] && [ "$2" = node ]; then rm -rf "$FAKE_PREFIX/var/homebrew/linked/node"; fi"""
@@ -183,6 +187,7 @@ case "$1" in
 esac
 """
 OLLAMA_EXTRA = """if [ "$1" = list ]; then printf 'NAME ID SIZE\\nfirst:latest a 1\\nsecond:latest b 2\\n'; exit 0; fi"""
+MAS_EXTRA = """if [ "$1" = list ]; then printf '%s\\n' $FAKE_MAS_INSTALLED; fi"""
 SUDO_EXTRA = """[ "$1" = -A ] && shift
 "$@"; exit $?"""
 
@@ -211,7 +216,7 @@ class Machine:
         self.log = self.base / "log"
         self.log.write_text("")
         fake(self.bin / "mise", "mise", MISE_EXTRA)
-        extras = {"ollama": OLLAMA_EXTRA, "sudo": SUDO_EXTRA}
+        extras = {"ollama": OLLAMA_EXTRA, "sudo": SUDO_EXTRA, "mas": MAS_EXTRA}
         for name in commands:
             fake(self.bin / name, name, extras.get(name, ""))
         if brew:
@@ -281,7 +286,7 @@ class Machine:
         output = io.StringIO()
         try:
             with contextlib.redirect_stdout(output):
-                software.run(action, self.config, check=check)
+                self.issues = software.run(action, self.config, check=check)
             return output.getvalue()
         except RuntimeError as error:
             error.output = output.getvalue()
@@ -390,7 +395,8 @@ CLI_REPO = {
                              '[tools]\n"aqua:x/broken" = "latest"\n"aqua:x/works" = "latest"\n'
                              '"npm:optional-broken" = "latest"\n"npm:optional-works" = "latest"\n',
     "mac/gui.toml": '[packages]\n"brew-cask:owned" = "latest"\n"brew-cask:fresh" = "latest"\n"brew-cask:bad" = "latest"\n',
-    "mac/app-store.toml": '[packages]\n"mas:111" = { name = "One" }\n"mas:222" = { name = "Two" }\n',
+    "mac/app-store.toml": '[packages]\n"mas:111" = { name = "One" }\n"mas:222" = { name = "Two" }\n'
+                          '"mas:333" = { name = "Installed" }\n"mas:444" = { name = "Unlisted" }\n',
 }
 BUNDLE = "brew bundle install --file=-: "
 
@@ -402,7 +408,8 @@ for platform in ("mac", "linux"):
         before = snapshot(machine.base)
         for action in ("cli", "gui", "app-store", "node", "update"):
             machine.run(action, check=True)
-        assert all(call.startswith(("ollama list", "brew list ")) for call in machine.calls()), machine.calls()
+        assert all(call.startswith(("ollama list", "brew list ", "mas list", "mas info "))
+                   for call in machine.calls()), machine.calls()
         assert snapshot(machine.base) == before
 print("PASS: check mode runs no installers and writes no files")
 
@@ -466,6 +473,8 @@ with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
     output = machine.run("cli", FAKE_FAIL='brew "first"|install aqua:x/broken@latest')
     assert machine.tools() == {"aqua:x/works": "latest"}
+    assert sorted(issue.split(": ", 1)[0] for issue in machine.issues) == [
+        "Optional CLI package aqua:x/broken", "Optional CLI package brew:first"], machine.issues
     assert not any("node" in call or "pnpm" in call or "npm:" in call for call in machine.calls())
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
@@ -487,31 +496,39 @@ with tempfile.TemporaryDirectory() as directory:
     assert not any(call.startswith(BUNDLE) for call in machine.calls())
 print("PASS: a failed tldr removal stops new CLI package installation")
 
-# GUI and App Store: Mac only; installed casks upgrade greedily, others install with --adopt.
+# GUI and App Store: Mac only; installed casks upgrade greedily, others (including
+# stale Caskroom records without an installed version) install with --adopt.
+# Failures become returned issues and the remaining apps continue.
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, "linux", repo=fixture_repo(directory, CLI_REPO))
     assert "only on macOS" in machine.run("gui") and "only on macOS" in machine.run("app-store")
     assert machine.calls() == []
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
-    (machine.prefix / "Caskroom/owned").mkdir(parents=True)
+    (machine.prefix / "Caskroom/owned/1.0").mkdir(parents=True)
+    (machine.prefix / "Caskroom/fresh/.metadata").mkdir(parents=True)
     output = machine.run("gui", FAKE_FAIL="install --cask --adopt bad")
     calls = [call for call in machine.calls() if not call.startswith("brew list")]
     assert "brew install --cask --adopt fresh" in calls
     assert "brew upgrade --cask --greedy owned" in calls
-    assert calls[-1] == "brew install --cask --adopt bad"
+    assert calls[-2:] == ["brew install --cask --adopt bad", "brew info --cask --json=v2 bad"]
+    assert [issue.split(": ", 1)[0] for issue in machine.issues] == ["GUI app bad"], machine.issues
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
-    output = machine.run("app-store", FAKE_FAIL="mas get 111|mas install 111|mas get 222")
+    output = machine.run("app-store", FAKE_FAIL="mas get 111|mas install 111|mas get 222|mas info 444",
+                         FAKE_MAS_INSTALLED="333")
     calls = machine.calls()
     assert calls[0] == "mdimport /Applications"
     assert f"sudo {machine.bin}/mas install 222" in calls and "mas install 222" in calls
-    assert "App Store installation failures: mas:111 (One)" in output, output
+    # An installed app needs no lookup or sudo; an app the App Store cannot find is not attempted.
+    assert not any(call.endswith((" 333", "get 444", "install 444")) for call in calls), calls
+    assert [issue.split(": ", 1)[0] for issue in machine.issues] == [
+        "App Store app mas:111 (One)", "App Store app mas:444 (Unlisted)"], machine.issues
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO), commands=("sudo", "mdimport"))
     fails(lambda: machine.run("app-store", FAKE_FAIL="brew install mas"), "mas CLI")
     assert machine.calls() == ["brew install mas"]
-print("PASS: GUI and App Store failures are reported and setup continues; both are Mac only")
+print("PASS: GUI and App Store failures are returned as issues and the rest continue; both are Mac only")
 
 # B10/B12: Node is installed and proven before the old provider is retired.
 for platform in ("mac", "linux"):

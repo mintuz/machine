@@ -486,8 +486,11 @@ mise run packages --profile personal
 mise run packages --profile work
 ```
 
-Required CLI failures stop setup. Optional CLI, GUI and App Store failures
-are reported while setup continues. Removing an inventory entry does not
+Required CLI failures stop setup. Optional CLI, GUI and App Store failures do
+not stop the later steps. At the end, setup lists each failed item with its
+probable cause and the next action, then returns failure. Setup skips App
+Store apps that are already installed. It reports an App Store ID that has no
+Mac app instead of trying to install it. Removing an inventory entry does not
 uninstall an existing package.
 
 ### Review package trust
@@ -898,7 +901,7 @@ shell suite.
 | Dotfiles update refused | Save local work, resolve divergent history, or correct the configured repository. Do not discard work to bypass the check. |
 | Shell still runs old hooks | Start a fresh login shell with `exec zsh -l`. Sourcing `.zshrc` does not remove previously registered hooks. |
 | Node transfer failed | Preserve the old runtime and pending state. Correct the error, then rerun with the same configuration. |
-| Package or App Store installation failed | Review the reported package error or sign in to the App Store, then retry the affected component. |
+| Package or App Store installation failed | Follow the advice in the list at the end of the output, for example remove a leftover upgrade backup or sign in to the App Store. Then retry the affected component. |
 | Remote Login refuses a session or fails its checks | Use a fresh local Mac terminal and follow the remote access guide. Never bypass a failed run by enabling SSH manually. |
 
 Repository maintenance guidance is in [AGENTS.md](AGENTS.md).

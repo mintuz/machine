@@ -182,9 +182,14 @@ store. Maintenance must not grant blanket trust to installed taps or restore
 revoked permissions implicitly.
 
 Required CLI failures stop setup. Optional CLI, GUI and App Store installation
-failures must be reported even when setup continues. Preserve cask adoption
+failures let later steps continue. Return them as issues from the step; the
+dispatcher lists them with advice at the end, also after a fatal error, and
+returns failure. Diagnose failures only from read-only queries; never repair
+Homebrew state or delete backups automatically. Preserve cask adoption
 and greedy upgrades where configured. Mac App Store installation requires
-sign-in. Remove disabled `tldr` before installing its replacement `tlrc`.
+sign-in; skip installed App Store apps and do not attempt IDs that the App
+Store lookup cannot find. Remove disabled `tldr` before installing its
+replacement `tlrc`.
 
 The `node` action solely owns Node, pnpm, all `npm:` mise providers,
 global-package migration and pnpm shell/global settings. `cli` owns
