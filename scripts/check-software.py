@@ -404,6 +404,61 @@ for platform in ("mac", "linux"):
         assert snapshot(machine.base) == before
 print("PASS: check mode runs no installers and writes no files")
 
+# Native installs trust only selected formulae and casks, including optional packages.
+with tempfile.TemporaryDirectory() as directory:
+    repo = fixture_repo(directory, {
+        "shared/cli.toml": '[packages]\n"brew:git" = "latest"\n'
+                           '"brew:can1357/tap/omp" = "latest"\n',
+        "mac/cli.toml": '[packages]\n'
+                        '"brew-cask:acme/widgets/cli-widget" = { greedy = true }\n',
+        "mac/cli-optional.toml": '[packages]\n"brew:acme/tools/helper" = "latest"\n'
+                                 '"brew-cask:acme/widgets/optional-widget" = "latest"\n',
+        "mac/work/cli.toml": '[packages]\n"brew:acme/tools/excluded" = "latest"\n',
+    })
+    machine = Machine(directory, repo=repo)
+    state = write(machine.base / "bundle-state.json", json.dumps({
+        "trusted": ["formula:other/tools/keep"], "installed": [],
+    }))
+    driver = write(machine.base / "bundle.py", '''import json
+import os
+from pathlib import Path
+import re
+import sys
+
+state_path = Path(os.environ["FAKE_BUNDLE_STATE"])
+state = json.loads(state_path.read_text())
+for line in sys.stdin:
+    match = re.fullmatch(r'(tap|brew|cask) "([^"]+)"(.*)\\n', line)
+    assert match, line
+    kind, name, options = match.groups()
+    item_type = {"tap": "tap", "brew": "formula", "cask": "cask"}[kind]
+    identity = f"{item_type}:{name}"
+    if "trusted: true" in options and identity not in state["trusted"]:
+        state["trusted"].append(identity)
+    if kind != "tap":
+        tap = "/".join(name.split("/")[:2])
+        if name.count("/") == 2 and not (
+                identity in state["trusted"] or f"tap:{tap}" in state["trusted"]):
+            print(f"Refusing to load untrusted {identity}", file=sys.stderr)
+            sys.exit(1)
+        if identity not in state["installed"]:
+            state["installed"].append(identity)
+    state_path.write_text(json.dumps(state))
+''')
+    fake(machine.prefix / "bin/brew", "brew",
+         extra='exec "$FAKE_PYTHON" "$FAKE_BUNDLE_DRIVER"')
+    machine.env.update(FAKE_BUNDLE_STATE=str(state), FAKE_BUNDLE_DRIVER=str(driver))
+    before = state.read_bytes()
+    machine.run("cli", check=True)
+    assert state.read_bytes() == before
+    machine.run("cli")
+    installed = json.loads(state.read_text())
+    selected = {"formula:git", "formula:can1357/tap/omp", "formula:acme/tools/helper",
+                "cask:acme/widgets/cli-widget", "cask:acme/widgets/optional-widget"}
+    assert set(installed["installed"]) == selected
+    assert set(installed["trusted"]) == selected - {"formula:git"} | {"formula:other/tools/keep"}
+print("PASS: required and optional installs trust only selected formulae/casks; previews preserve trust")
+
 # Required CLI failures stop; optional failures are reported and the rest continue.
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))

@@ -322,17 +322,21 @@ def _mise(config):
 
 
 def _brewfile(entries):
-    """A Brewfile for entries, tapping third-party formula taps first."""
+    """Declare native packages with item-level trust for qualified names."""
     lines = []
     for entry in entries:
-        if entry.manager == "brew":
-            parts = entry.name.split("/")
+        parts = entry.name.split("/")
+        if len(parts) == 3:
             tap = f"tap {json.dumps('/'.join(parts[:2]))}"
-            if len(parts) == 3 and tap not in lines:
+            if tap not in lines:
                 lines.append(tap)
-            lines.append(f"brew {json.dumps(entry.name)}")
-        else:
-            lines.append(f"cask {json.dumps(entry.name)}" + (", greedy: true" if entry.greedy else ""))
+        kind = "brew" if entry.manager == "brew" else "cask"
+        line = f"{kind} {json.dumps(entry.name)}"
+        if len(parts) == 3:
+            line += ", trusted: true"
+        if entry.manager == "brew-cask" and entry.greedy:
+            line += ", greedy: true"
+        lines.append(line)
     return "".join(line + "\n" for line in lines)
 
 

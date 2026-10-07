@@ -175,6 +175,11 @@ The native mise bottle installer did not create Git's certificate
 configuration in clean Ubuntu validation, so it is not the native package
 owner for this release. Use mise for runtimes and supported standalone CLI
 providers. Use apt only for Ubuntu bootstrap prerequisites and zsh.
+Generated Brewfiles must grant item-level `trusted: true` to selected,
+fully qualified Homebrew formulae and casks. Never trust their whole tap or
+disable Homebrew's trust policy. Preview commands must not modify the trust
+store. Maintenance must not grant blanket trust to installed taps or restore
+revoked permissions implicitly.
 
 Required CLI failures stop setup. Optional CLI, GUI and App Store installation
 failures must be reported even when setup continues. Preserve cask adoption

@@ -213,6 +213,27 @@ third-party Homebrew formula. The other native package declarations remain.
 [OMP](https://omp.sh/) is a required shared CLI package for both profiles
 on macOS and Ubuntu, installed through
 [`can1357/tap/omp`](https://github.com/can1357/homebrew-tap).
+
+The generated Brewfile grants item-level Homebrew trust to each selected,
+fully qualified formula or cask, such as `can1357/tap/omp`. Use fully
+qualified names for third-party packages; do not rely on a previously
+tapped repository to resolve a short name. Setup does not trust whole taps
+or disable Homebrew's trust checks. Formulae and casks can execute Ruby code
+with your user's privileges; review third-party sources before adding them.
+
+Trust persists for later updates. Maintenance does not grant blanket trust
+to other installed taps or restore permissions that you revoked. Review
+and restore a missing item permission explicitly if an update needs it.
+
+If an older checkout stops with an untrusted `can1357/tap/omp` error, and
+you trust that formula, grant permission to that item:
+
+```bash
+brew trust --formula can1357/tap/omp
+```
+
+Then rerun the original setup command with the same profile and options.
+
 The [Tailscale Mac app](https://formulae.brew.sh/cask/tailscale-app) is in
 the shared Mac GUI inventory as `tailscale-app`, not the App Store
 inventory. Skipping `app-store` does not skip it; skipping `gui` does.
