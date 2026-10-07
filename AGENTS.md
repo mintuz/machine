@@ -186,7 +186,9 @@ failures let later steps continue. Return them as issues from the step; the
 dispatcher lists them with advice at the end, also after a fatal error, and
 returns failure. Diagnose failures only from read-only queries; never repair
 Homebrew state or delete backups automatically. Preserve cask adoption
-and greedy upgrades where configured. Mac App Store installation requires
+and greedy upgrades where configured, but skip a greedy upgrade when every
+app of the cask reports a plain numeric version equal to or newer than the
+Homebrew version. Mac App Store installation requires
 sign-in; skip installed App Store apps and do not attempt IDs that the App
 Store lookup cannot find. Remove disabled `tldr` before installing its
 replacement `tlrc`.
