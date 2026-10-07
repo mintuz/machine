@@ -402,6 +402,9 @@ not an empty package list. Custom npm prefixes are honoured; `.npmrc` is not
 rewritten. Old nvm installations are not deleted.
 Node probes must match mise's installed-runtime metadata. A Node executable
 found only on `PATH` is not accepted as a mise migration source or target.
+When mise reports no usable installed Node runtime, setup skips the
+previous-runtime execution probe. It still installs and verifies the
+requested target. Failed metadata queries and target checks remain errors.
 
 The managed fragment pins the successfully transferred Node version.
 The adjacent `dev-machine-setup.node.json` retains the requested selector

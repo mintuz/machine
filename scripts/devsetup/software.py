@@ -415,11 +415,11 @@ def _previous_mise_node(config, shell, spec):
     if shell.check:
         return None
     installs = _installed_mise_nodes(config, shell)
+    if not installs:
+        return None
     path = _mise_node_path(config, shell, spec, installs)
     if path:
         return Path(path).parent
-    if not installs:
-        return None
     return max(installs, key=lambda path: _version_key(installs[path])).parent
 
 

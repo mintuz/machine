@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import sys
 import shutil
+import subprocess
 import tempfile
 import tomllib
 
@@ -160,6 +161,7 @@ elif args[-3:] == ["node", "-p", "process.execPath"]:
     else:
         path = selected.read_text().strip() if selected.exists() else ""
     if not path:
+        print("Node runtime is not installed", file=sys.stderr)
         sys.exit(1)
     print(path)
 PY"""
@@ -723,6 +725,27 @@ for action, failure, selector_change in (("node", "install -g cli-a", False),
         machine.run(action, FAKE_NODE_AFTER=f"{target}/node")
         assert machine.node_globals(target) == {}, "A committed migration replayed its old source"
 print("PASS: transfer and source-probe failures retain the working pin and original retry source")
+
+# A fresh installation must not report a failed execution of a nonexistent source.
+with tempfile.TemporaryDirectory() as directory:
+    machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
+    Path(machine.env["FAKE_NODE_REGISTRY"]).write_text("[]")
+    machine.select_node(None)
+    result = subprocess.run(
+        [sys.executable, "-B", "-c",
+         "import json, sys; from devsetup import software; "
+         "software.run('node', json.loads(sys.argv[1]))", json.dumps(machine.config)],
+        env={**os.environ, **machine.env, "HOME": str(machine.home),
+             "PYTHONPATH": str(root / "scripts"),
+             "FAKE_NODE_AFTER": str(machine.active_bin / "node")},
+        text=True, capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == "", result.stderr
+    assert machine.tools()["node"] == "24.0.0"
+    assert machine.selected_node() == machine.active_bin / "node"
+    assert json.loads(machine.fragment.with_suffix(".node.json").read_text()) == {"selector": "lts"}
+print("PASS: fresh Node setup installs and selects its target without a missing-source error")
 
 # PATH-only Node is neither a migration source nor proof of a mise target.
 for target_missing in (False, True):
