@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -28,85 +29,7 @@ GIT_SETTINGS = (
     ("push.autoSetupRemote", "true"),
 )
 
-MACOS_DEFAULTS = (
-    ("com.apple.finder", "ShowPathbar", "-bool", "true"),
-    ("com.apple.finder", "ShowStatusBar", "-bool", "true"),
-    ("com.apple.finder", "ShowExternalHardDrivesOnDesktop", "-bool", "true"),
-    ("com.apple.finder", "ShowHardDrivesOnDesktop", "-bool", "true"),
-    ("com.apple.finder", "ShowMountedServersOnDesktop", "-bool", "true"),
-    ("com.apple.finder", "ShowRemovableMediaOnDesktop", "-bool", "true"),
-    ("com.apple.finder", "_FXShowPosixPathInTitle", "-bool", "YES"),
-    None,  # chflags nohidden ~/Library
-    ("com.apple.finder", "NewWindowTarget", "-string", "PfLo"),
-    ("com.apple.finder", "NewWindowTargetPath", "-string", "file://{home}"),
-    ("com.apple.finder", "FXDefaultSearchScope", "-string", "SCcf"),
-    ("NSGlobalDomain", "AppleShowAllExtensions", "-bool", "true"),
-    ("com.apple.finder", "FXEnableExtensionChangeWarning", "-bool", "false"),
-    ("NSGlobalDomain", "AppleShowScrollBars", "-string", "Always"),
-    ("NSGlobalDomain", "KeyRepeat", "-int", "0"),
-    ("com.apple.dock", "orientation", "left"),
-    ("com.apple.dock", "show-process-indicators", "-bool", "true"),
-    ("com.apple.dock", "showhidden", "-bool", "true"),
-    ("com.apple.dock", "launchanim", "-bool", "false"),
-    ("com.apple.dock", "mineffect", "scale"),
-    ("com.apple.dock", "expose-animation-duration", "-float", "0.1"),
-    ("com.apple.dock", "autohide", "-bool", "false"),
-    ("com.apple.dock", "autohide-delay", "-float", "0"),
-    ("com.apple.finder", "EmptyTrashSecurely", "-bool", "true"),
-    ("com.apple.finder", "DisableAllAnimations", "-bool", "true"),
-    ("com.apple.finder", "QuitMenuItem", "-bool", "true"),
-    ("com.apple.finder", "AppleShowAllFiles", "-bool", "true"),
-    ("com.apple.finder", "FXPreferredViewStyle", "-string", "Nlsv"),
-    ("NSGlobalDomain", "NSNavPanelExpandedStateForSaveMode", "-bool", "true"),
-    ("NSGlobalDomain", "PMPrintingExpandedStateForPrint", "-bool", "true"),
-    ("com.apple.LaunchServices", "LSQuarantine", "-bool", "false"),
-    ("NSGlobalDomain", "AppleKeyboardUIMode", "-int", "3"),
-    ("com.apple.screensaver", "askForPassword", "-int", "1"),
-    ("com.apple.screensaver", "askForPasswordDelay", "-int", "0"),
-    ("com.apple.screencapture", "location", "-string", "{home}/Desktop"),
-    ("com.apple.screencapture", "disable-shadow", "-bool", "true"),
-    ("NSGlobalDomain", "AppleFontSmoothing", "-int", "2"),
-    ("com.apple.spotlight", "DictionaryLookupEnabled", "-bool", "false"),
-    ("NSGlobalDomain", "NSAutomaticSpellingCorrectionEnabled", "-bool", "false"),
-    ("com.apple.Terminal", "NewTabWorkingDirectoryBehavior", "-bool", "true"),
-)
 SOFTWARE_UPDATE_PLIST = "/Library/Preferences/com.apple.SoftwareUpdate"
-
-# Each entry is the dockutil --add argument list; '' is a spacer tile.
-DOCK_ITEMS = (
-    ["/System/Applications/Home.app"],
-    ["", "--type", "spacer", "--section", "apps", "--after", "Home"],
-    ["/Applications/Cursor.app"],
-    ["/Applications/Warp.app"],
-    ["/Applications/Xcode.app"],
-    ["/Applications/Figma.app"],
-    ["/Applications/Bruno.app"],
-    ["", "--type", "spacer", "--section", "apps", "--after", "Bruno"],
-    ["/Applications/ChatGPT.app"],
-    ["/Applications/Claude.app"],
-    ["/Applications/Open Design.app"],
-    ["", "--type", "spacer", "--section", "apps", "--after", "Open Design"],
-    ["/Applications/Safari.app"],
-    ["/Applications/Helium.app"],
-    ["", "--type", "spacer", "--section", "apps", "--after", "Helium"],
-    ["/Applications/Drafts.app"],
-    ["/Applications/Notion.app"],
-    ["/Applications/Obsidian.app"],
-    ["/Applications/1Password.app"],
-    ["/Applications/Things3.app"],
-    ["", "--type", "spacer", "--section", "apps", "--after", "Things"],
-    ["/System/Applications/Mail.app"],
-    ["/Applications/Proton Mail.app"],
-    ["/System/Applications/Calendar.app"],
-    ["", "--type", "spacer", "--section", "apps", "--after", "Calendar"],
-    ["/System/Applications/Messages.app"],
-    ["/Applications/Slack.app"],
-    ["/Applications/GatherV2.app"],
-    ["/Applications/Discord.app"],
-    ["", "--type", "spacer", "--section", "apps", "--after", "Discord"],
-    ["/System/Applications/Music.app"],
-    ["/System/Applications/Podcasts.app"],
-)
 
 
 def run(action: str, config: dict, *, check: bool = False) -> None:
@@ -263,7 +186,7 @@ def bootstrap(config: dict, check: bool = False) -> None:
             f'eval "$({shlex.quote(config["brew"])} shellenv)"',
             f'eval "$({shlex.quote(config["mise"])} activate {shell})"',
         ], check=check)
-    if config["platform"] == "mac" and config["manage_ssh_config"]:
+    if config["platform"] == "mac" and config["steps"]["ssh"]:
         installed = Path("/Applications/1Password.app").exists() or _brew_has(config, "--cask", "1password")
         if not installed and check:
             print("1Password: would install the desktop app (brew install --cask 1password).")
@@ -298,8 +221,27 @@ def git(config: dict, check: bool = False) -> None:
     print("Git: check complete; nothing changed." if check else "Git: identity and global settings applied.")
 
 
+def _local_origin(repo: str, base: Path) -> Path | None:
+    """Resolve filesystem origins using the directory where Git interprets them."""
+    if repo.startswith("file://"):
+        url = urllib.parse.urlsplit(repo)
+        if url.netloc not in ("", "localhost") or url.query or url.fragment:
+            return None
+        path = Path(urllib.parse.unquote(url.path))
+        if not path.is_absolute():
+            return None
+    else:
+        # A scheme or scp-style host:path is not a local filesystem origin.
+        if ":" in repo.split("/", 1)[0]:
+            return None
+        path = Path(repo)
+    return (base / path).resolve()
+
+
 def _checkout(repo: str, dest: Path, version: str) -> None:
     """Clone or update a Git checkout without discarding local work.
+
+    An existing origin must match before fetching or changing the checkout.
 
     Tracked modifications stop the run. Branches only fast-forward. A tag or
     commit selects that exact revision, without moving existing branch refs.
@@ -314,6 +256,14 @@ def _checkout(repo: str, dest: Path, version: str) -> None:
     elif not (dest / ".git").exists():
         raise RuntimeError(f"{dest} exists but is not a Git checkout. Move it aside and run again.")
     else:
+        origin = _run([*git_in, "config", "--get", "remote.origin.url"], capture=True).stdout.rstrip("\n")
+        configured_path = _local_origin(repo, Path.cwd())
+        origin_path = _local_origin(origin, dest)
+        matches = (configured_path == origin_path if configured_path is not None and origin_path is not None
+                   else repo == origin)
+        if not matches:
+            raise RuntimeError(f"{dest} origin {origin!r} does not match configured repository {repo!r}. "
+                               "Move the checkout aside or choose its repository; setup never rewrites origin.")
         changes = _run([*git_in, "status", "--porcelain", "--untracked-files=no"], capture=True).stdout
         if changes.strip():
             raise RuntimeError(f"{dest} has local changes. Commit or stash them; setup never discards them.")
@@ -392,11 +342,9 @@ def fzf(config: dict) -> None:
 def osx(config: dict) -> None:
     """Apply the macOS preferences, the automatic update check, and restart Finder."""
     home = config["home"]
-    for entry in MACOS_DEFAULTS:
-        if entry is None:
-            _run(["chflags", "nohidden", Path(home, "Library")])
-            continue
-        _run(["defaults", "write", *(part.format(home=home) for part in entry)])
+    _run(["chflags", "nohidden", Path(home, "Library")])
+    for entry in config["macos_preferences"]:
+        _run(["defaults", "write", *(part.replace("{home}", home) for part in entry)])
     current = subprocess.run(["defaults", "read", SOFTWARE_UPDATE_PLIST, "AutomaticCheckEnabled"],
                              text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     if current.returncode != 0 or current.stdout.strip() != "1":
@@ -407,13 +355,18 @@ def osx(config: dict) -> None:
 
 def dock(config: dict) -> None:
     """Replace the Dock layout with dockutil; missing apps are reported and skipped."""
+    if not config["dock_items"]:
+        return
     _formula(config, "dockutil")
     if shutil.which("dockutil") is None:
         print("dockutil is not available; skipping Dock configuration.")
         return
     _run(["dockutil", "--remove", "all", "--no-restart"])
-    for item in DOCK_ITEMS:
-        result = subprocess.run(["dockutil", "--add", *item, "--no-restart"])
+    for item in config["dock_items"]:
+        path = item[0]
+        if path == "~" or path.startswith("~/"):
+            path = config["home"] + path[1:]
+        result = subprocess.run(["dockutil", "--add", path, *item[1:], "--no-restart"])
         if result.returncode != 0:
             print(f"Dock: could not add {item[0] or 'spacer'}; continuing.")
     _run(["killall", "Dock"])

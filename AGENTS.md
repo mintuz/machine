@@ -17,6 +17,7 @@ contract.
 | Path | Responsibility |
 | --- | --- |
 | `install.sh`, `scripts/bootstrap-*.sh` | Consent prompts, ARM/OS validation and bootstrap prerequisites |
+| `remote-login.sh` | Explicit post-install Remote Login entry point using mise's configured Python |
 | `mise.toml`, `mise.lock` | Public tasks and the locked helper Python |
 | `scripts/with-sudo-askpass.sh` | Sudo authorisation, password helper and cleanup |
 | `scripts/setup.py`, `scripts/devsetup/cli.py` | Direct CLI and setup ordering |
@@ -32,8 +33,8 @@ contract.
 
 ## Entry points and configuration
 
-`install.sh [personal|work|--bootstrap-only] [--1password-ssh|--keep-ssh]
-[--dotfiles|--skip-dotfiles]` validates the profile, OS, architecture and user
+`install.sh [personal|work|--bootstrap-only] [--config PATH] [--skip STEP]
+[--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]` validates the profile, OS, architecture and user
 before bootstrap. Reject Intel, Rosetta, non-Ubuntu Linux and root. Bootstrap
 helpers are sourced, not independent entry points. Keep OS prerequisites,
 Homebrew installation and the checksummed mise/locked Python installation in
@@ -54,12 +55,36 @@ paths in these tables and shared preferences outside them. Do not let local
 TOML files enable the private security command-injection seams used by tests.
 Preserve the documented `remote_login_sshd` list and
 `remote_login_launchctl` executable overrides for isolated validation.
+Reject unknown settings in shared and platform tables, including inactive
+platforms. The canonical `[steps]` table contains `ssh`, `git`, `cli`,
+`remote-login`, `gui`, `zsh`, `app-store`, `osx`, `node`, `dotfiles` and
+`dock`. Merge it by key, not whole-table replacement. Other lists replace
+earlier values. The old root feature keys are removed, not aliases.
+Repeatable `--skip STEP` overrides the selected policy for aggregate
+installation or maintenance. Direct component commands opt in explicitly
+and report when they override a saved exclusion; contradictory explicit
+flags fail. Bootstrap and preflight cannot be skipped. Revocation is a
+separate operation and must never be suppressed by a step exclusion.
+
+The installer forwards the same ordered `--config` files and component
+choices to Python, resolving relative paths from the original invocation
+directory. Keep TOML parsing in Python. On an unbootstrapped machine, TOML
+validation follows interpreter installation; do not promise zero bootstrap
+changes for an invalid file. SSH client consent remains before bootstrap
+and takes precedence over file choices. The installer always disables
+Remote Login enablement for its run; access setup is a later explicit
+operation. Pass dotfiles and profile overrides only for explicit choices;
+otherwise let Python resolve the configured values and defaults.
+
 
 Full setup validates prerequisites and refreshes Homebrew before managed SSH,
 Git, CLI/fzf, Remote Login, GUI, Zsh, App Store, macOS preferences, Node,
-dotfiles and Dock. Preserve this order and each OS/feature guard. A failed
-prerequisite or Homebrew refresh must stop before SSH or host writes. Run the
-Python process as the normal user; escalate individual operations with sudo.
+dotfiles and Dock. Filter this fixed order by the typed step policy.
+Preserve each OS and security guard. A failed prerequisite or Homebrew
+refresh must stop before SSH or host writes. Host preflight owns the one
+setup/component refresh; CLI and GUI helpers must not repeat it. The
+installer's prerequisite bootstrap has its own refresh. Run Python as the
+normal user; escalate individual operations with sudo.
 
 `mise run packages --profile personal|work` is read-only. Root task settings
 must prevent automatic runtime installation during previews and checks.
@@ -70,7 +95,7 @@ it as a complete configuration or SSH deployment preview.
 ## Consent and independent repositories
 
 The SSH prompt defaults to No. Without a terminal, preserve SSH unless
-`--1password-ssh` is explicit. Pass `manage_ssh_config` for that run; both OS
+`--1password-ssh` is explicit. Set `steps.ssh` for that run; both OS
 defaults are false. Declining must leave existing SSH files and agents
 untouched, including a configuration from an earlier opt-in. The explicit
 `mise run ssh` action opts in without a prompt.
@@ -83,9 +108,10 @@ path; otherwise use `~/.1password/agent.sock`. Headless users forward their
 client agent. Do not install the Linux desktop app during headless bootstrap.
 
 Dotfiles default to enabled on both OSes. Interactive Ubuntu full setup asks
-`Install your dotfiles? [Y/n]` before bootstrap. Enter and unattended runs keep
-the default. Both explicit dotfiles flags skip the prompt. Bootstrap-only
-runs neither ask about nor install dotfiles. `mise run dotfiles` is the later
+`Install your dotfiles? [Y/n]` before bootstrap. Enter and unattended runs
+keep the file's `steps.dotfiles` choice, or the enabled default. Explicit
+dotfiles flags and `--skip dotfiles` skip the prompt. Bootstrap-only runs
+neither ask about nor install dotfiles. `mise run dotfiles` is the later
 explicit installation path.
 
 Delegate installation to the external dotfiles repository's `install.sh`.
@@ -97,22 +123,34 @@ use fast-forward-only branch updates, and honour exact revision pins. Preserve
 local branch commits. Refuse to leave unreferenced detached commits behind
 until the user saves them on a branch. Back up managed conflict paths before
 replacing them.
+For an existing checkout, reject an origin that differs from the configured
+repository before fetching or changing its revision. Compare local paths
+using Git's path interpretation; never silently rewrite a user's origin.
 
 The external shell activates mise and handles project Node version files.
 It must not require nvm or the Homebrew executable. Its `dotfiles.toml` fragment
 must coexist with this repository's `dev-machine-setup.toml` under a real
 `~/.config/mise/conf.d` directory. Honour `MISE_CONFIG_DIR` and
-`XDG_CONFIG_HOME`. Do not overwrite user mise settings or write through
-symlinked configuration directories. With dotfiles disabled, configure regular
-shell files for Homebrew, mise and fzf. Ubuntu also gets pnpm paths and the
-Oh My Zsh/autosuggestions block. Never edit symlinked shell files owned by
-another repository.
+`XDG_CONFIG_HOME`. Do not overwrite user mise settings or traverse external
+symlinked configuration ancestors, including `.config`. Normal macOS `/var`
+and `/tmp` aliases are permitted. With dotfiles disabled, bootstrap still
+configures regular shell files for Homebrew and mise. Selected CLI setup
+adds fzf; selected Node setup adds Ubuntu pnpm paths; selected Zsh setup
+adds the Oh My Zsh/autosuggestions block. Use host.ensure_block for managed
+shell blocks. Never edit symlinked shell files owned by another repository.
 
 SSH key filenames, Git identity, dotfiles source and pnpm global packages live
 in `defaults.toml`. Profiles change the primary managed GitHub key, not Git
 identity. Keep unique timestamped SSH backups inside the security operation
 so direct calls cannot bypass them or overwrite an earlier backup. Backups
 live under `~/.dev-setup-backups`; leave older backup directories untouched.
+
+Mac preferences and Dock argument lists live in `defaults.toml` under
+`[mac]`, as `macos_preferences` and `dock_items`. Validate their shapes
+before writes. Empty Dock data must not clear the Dock. Empty preference
+data skips configurable defaults but retains Library visibility and
+automatic-update checks; `steps.osx=false` skips the entire operation.
+Do not restore the removed automatic `LSQuarantine=false` preference.
 
 Reuse existing sudo authorisation, including NOPASSWD access when `sudo -v`
 requires a password under the account's verification policy. Prompt only when
@@ -142,6 +180,13 @@ failures must be reported even when setup continues. Preserve cask adoption
 and greedy upgrades where configured. Mac App Store installation requires
 sign-in. Remove disabled `tldr` before installing its replacement `tlrc`.
 
+The `node` action solely owns Node, pnpm, all `npm:` mise providers,
+global-package migration and pnpm shell/global settings. `cli` owns
+remaining CLI inventories and fzf. Do not hide Node mutation in CLI
+installation, even when Node is excluded. Native prerequisites of selected
+components remain allowed; exclusions are not an uninstall/package-denial
+policy.
+
 Prove mise's Node executable works and save its default configuration before
 unlinking Homebrew Node. Transfer npm globals at their installed versions from
 the previous mise runtime, nvm's default and Homebrew Node. Read legacy
@@ -149,27 +194,66 @@ providers only before the machine-owned fragment first declares Node; later
 runs must respect packages the user uninstalled. Existing target packages win.
 Report conflicting versions, linked/unreadable packages and other nvm versions
 rather than silently losing them. Honour an explicit npm prefix without
-rewriting `.npmrc`. A transfer or configuration failure must retain the old
-provider and return failure. Keep old runtimes; do not prune before preserving
-their globals. Ensure child tools can find the configured mise executable,
-even with an absolute `--mise` path and a minimal `PATH`.
+rewriting `.npmrc`. A failed source-directory probe is an error, not an
+empty source. Before installing a target, preserve the original migration
+source and working concrete Node pin. The adjacent
+`dev-machine-setup.node.json` records the requested selector and pending
+source; retries must resume from it, including selector changes and
+already-installed targets. Commit the proven target pin atomically and
+recognise a completed commit if journal cleanup was interrupted, without
+replaying removed legacy globals. A transfer or configuration failure must
+retain the old provider and return failure. Reject a conflicting effective
+mise default before retiring Homebrew Node. Keep old runtimes; do not prune
+before preserving their globals. Ensure child tools can find the configured
+mise executable, even with an absolute `--mise` path and a minimal `PATH`.
+With automatic installation disabled, `mise exec` can still find an unrelated
+Node on `PATH`. Accept a source or target only when its executable matches
+successful `mise ls --installed --json node` metadata. Preserve the registered
+install path when matching symlinks; do not derive a pin from an external
+executable's directory name. If a pending source no longer exists, stop before
+changing the journal or pin and require restoration of that source.
 
-`mise run update` maintains all installed Homebrew formulae/casks regardless of
-profile, mise tools, npm/pnpm globals, Mac App Store apps and Ollama models.
-Use `mise upgrade --no-prune`. Continue independent maintenance components
-after errors, then return failure if any component failed. A missing tool is
-skipped, not reported as updated. Do not introduce Ubuntu system upgrades.
+By default, `mise run update` maintains all installed Homebrew
+formulae/casks regardless of profile, machine-fragment mise tools, npm/pnpm
+globals, Mac App Store apps and Ollama models. Apply the same typed
+component policy: `cli` owns formulae, CLI casks, non-Node mise tools and
+Ollama; `gui` owns other installed casks; `node` owns Node/npm/pnpm;
+`app-store` owns mas maintenance. Classify CLI casks across all inventory
+layers, not only the current profile. Scope cleanup to included packages.
+Homebrew can still upgrade dependencies of included packages.
+Preserve Homebrew's bulk upgrade semantics for formulae and unfiltered
+casks. For filtered casks, select non-pinned entries from non-greedy outdated
+JSON; naming every installed cask would make each upgrade greedy and turn
+pinned or unavailable packages into failures. Do not add automatic cleanup
+or autoremove across excluded categories. A shared formula/cask token
+cannot be cleaned selectively and must be excluded from filtered cleanup.
+Use `mise upgrade --no-prune` for other managed tools; install a requested
+Node target without moving the working pin until migration succeeds.
+Continue independent maintenance components after errors, then return
+failure if any component failed. A missing tool is skipped, not reported
+as updated. Do not introduce Ubuntu system upgrades.
 
 ## Remote Login safety contract
 
-Remote Login is Mac-only and opt-in per run. Interactive full macOS setup asks
-`Configure and enable Remote Login on this Mac? [y/N]` before bootstrap.
-Warn first about key replacement, interrupted sessions, phone keys, Tailscale,
-policy/firewall review, Shields Up and FileVault. Do not offer it in detected
-SSH sessions. Ubuntu, bootstrap-only, unattended, No, Enter and end-of-input
-paths leave existing access unchanged; none revokes it. If selected, run the
-read-only `remote-login-check` after bootstrap and before the setup sudo
-wrapper. A failed preflight stops setup.
+Remote Login is Mac-only and opt-in per run. The initial installer must
+not offer an enablement prompt or run the Remote Login preflight. Always
+pass `--keep-remote-login` from `install.sh`, including when local files
+enable that step. Keep the Python bootstrap action free of Remote Login
+checks so missing Tailscale or phone keys cannot stop software installation.
+
+After installation, use `./remote-login.sh`. Keep this launcher thin:
+resolve the repository's Python through mise, then invoke the existing
+`remote-login` action. That action checks prerequisites before sudo or
+service changes; do not chain a duplicate preflight. Find mise on PATH or
+at the bootstrap link `~/.local/bin/mise`. Preserve the caller's directory
+for relative configuration paths. Keep the direct mise tasks available.
+
+Tailscale's Mac app is in the GUI inventory. Users must still sign in,
+prepare phone keys and review policy/firewall restrictions. Before
+enablement, document key replacement, interrupted sessions, Shields Up
+and FileVault limits. Do not treat app installation as consent or proof
+of network isolation. Offline revocation must not depend on enablement's
+phone-key or Tailscale prerequisites.
 
 `mise run remote-login-check` checks phone keys, Tailscale and the SSH command
 path without sudo, writes or service changes. It can run remotely. It does not
@@ -178,8 +262,9 @@ isolation. It does not require the Homebrew executable.
 
 `mise run remote-login` explicitly enables access. The separate
 `mise run remote-login-revoke` opts in with `revoke_remote_login=true`.
-Revocation wins if both flags are true. A false flag leaves earlier changes
-in place. Enablement and revocation reject non-Mac, root, invalid profiles
+Revocation wins if both choices are true, including the direct
+`remote-login --revoke-remote-login` command. A false step leaves earlier
+changes in place. Enablement and revocation reject non-Mac, root, invalid profiles
 and detected SSH sessions (`SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`). These
 checks are an operator guard, not proof of local-console use. Never bypass
 them by clearing variables.

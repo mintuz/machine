@@ -189,7 +189,7 @@ def _identity_agent(config: dict) -> str:
 
 
 def _manage_ssh(config: dict, check: bool) -> None:
-    if not config.get("manage_ssh_config"):
+    if not config["steps"]["ssh"]:
         print("Managed SSH configuration not selected; existing SSH files and agents are unchanged.", flush=True)
         return
     if config.get("platform") not in ("mac", "linux"):
@@ -343,9 +343,9 @@ def _preflight(config: dict) -> _RemoteLogin:
 
 def _enable_remote_login(config: dict, check: bool) -> None:
     if config.get("revoke_remote_login"):
-        print("Remote Login revocation was requested; it takes precedence, so enablement is skipped.", flush=True)
+        _revoke_remote_login(config, check)
         return
-    if not config.get("manage_remote_login"):
+    if not config["steps"]["remote-login"]:
         print("Remote Login not selected; existing Remote Login access is unchanged.", flush=True)
         return
     _require_mac(config)

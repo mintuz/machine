@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+caller_dir="${MISE_ORIGINAL_CWD:-$PWD}"
 repo_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_dir"
 os_release=/etc/os-release
 profile=""
+profile_explicit=false
 use_1password=""
 install_dotfiles=""
-manage_remote_login=false
+config_args=()
+skip_args=()
+skip_names=""
+has_config=false
+dotfiles_explicit=false
 usage() {
-  echo "Usage: $0 [personal|work|--bootstrap-only] [--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]" >&2
+  echo "Usage: $0 [personal|work|--bootstrap-only] [--config PATH] [--skip STEP] [--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]" >&2
   exit 64
 }
-for argument in "$@"; do
+while [[ $# -gt 0 ]]; do
+  argument="$1"
   case "$argument" in
     personal|work|--bootstrap-only)
       [[ -z "$profile" ]] || usage
       profile="$argument"
+      if [[ "$argument" != --bootstrap-only ]]; then profile_explicit=true; fi
       ;;
     --1password-ssh|--keep-ssh)
       [[ -z "$use_1password" ]] || usage
@@ -24,9 +32,42 @@ for argument in "$@"; do
       ;;
     --dotfiles|--skip-dotfiles)
       [[ -z "$install_dotfiles" ]] || usage
+      dotfiles_explicit=true
       if [[ "$argument" == --dotfiles ]]; then install_dotfiles=true; else install_dotfiles=false; fi
       ;;
+    --config)
+      [[ $# -ge 2 && -n "$2" ]] || usage
+      config_path="$2"
+      case "$config_path" in /*) ;; *) config_path="$caller_dir/$config_path" ;; esac
+      config_args+=(--config "$config_path")
+      has_config=true
+      shift
+      ;;
+    --skip)
+      [[ $# -ge 2 ]] || usage
+      case "$2" in
+        ssh|git|cli|remote-login|gui|zsh|app-store|osx|node|dotfiles|dock) ;;
+        *) echo "Unknown or mandatory step: $2" >&2; usage ;;
+      esac
+      skip_args+=(--skip "$2")
+      skip_names="$skip_names $2"
+      shift
+      ;;
     *) usage ;;
+  esac
+  shift
+done
+for skipped_step in $skip_names; do
+  case "$skipped_step" in
+    ssh)
+      [[ "$use_1password" != true ]] || { echo "--skip ssh conflicts with --1password-ssh." >&2; exit 64; }
+      use_1password=false
+      ;;
+    dotfiles)
+      [[ "$install_dotfiles" != true ]] || { echo "--skip dotfiles conflicts with --dotfiles." >&2; exit 64; }
+      install_dotfiles=false
+      dotfiles_explicit=true
+      ;;
   esac
 done
 if [[ -n "${DEVSETUP_PROFILE:-}" ]]; then
@@ -39,6 +80,7 @@ if [[ -n "${DEVSETUP_PROFILE:-}" ]]; then
     exit 64
   fi
 fi
+if [[ -n "${DEVSETUP_PROFILE:-}" ]]; then profile_explicit=true; fi
 profile="${profile:-${DEVSETUP_PROFILE:-personal}}"
 
 if [[ $EUID -eq 0 ]]; then
@@ -88,30 +130,15 @@ fi
 if [[ -z "$install_dotfiles" ]]; then
   install_dotfiles=true
   if [[ "$platform" == ubuntu && "$profile" != --bootstrap-only && -t 0 ]]; then
+    if [[ "$has_config" == true ]]; then
+      echo "Press Enter to keep the dotfiles choice from your configuration (default Yes)."
+    fi
     while true; do
       read -r -p "Install your dotfiles? [Y/n] " answer || break
       case "$answer" in
-        y|Y|yes|Yes|YES|"") break ;;
-        n|N|no|No|NO) install_dotfiles=false; break ;;
-        *) echo "Please answer yes or no." ;;
-      esac
-    done
-  fi
-fi
-if [[ "$platform" == macos && "$profile" != --bootstrap-only ]]; then
-  if [[ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-}" ]]; then
-    echo "Remote Login: leave existing access unchanged. Enable it later from the Mac's local console."
-  elif [[ -t 0 ]]; then
-    echo "Remote Login enables incoming SSH access and replaces all authorised keys with your listed phone keys."
-    echo "It can interrupt existing sessions. Run only from the Mac's local console."
-    echo "First prepare phone public keys, connect Tailscale, and review the firewall and tailnet policy."
-    echo "Keep Shields Up on. FileVault pre-unlock SSH is not covered by the key-only limits."
-    echo "See 'Remote access from an iPhone' in README.md. If not ready, choose No and use mise run remote-login later."
-    while true; do
-      read -r -p "Configure and enable Remote Login on this Mac? [y/N] " answer || break
-      case "$answer" in
-        y|Y|yes|Yes|YES) manage_remote_login=true; break ;;
-        n|N|no|No|NO|"") break ;;
+        y|Y|yes|Yes|YES) dotfiles_explicit=true; break ;;
+        "") break ;;
+        n|N|no|No|NO) install_dotfiles=false; dotfiles_explicit=true; break ;;
         *) echo "Please answer yes or no." ;;
       esac
     done
@@ -127,15 +154,17 @@ source "$repo_dir/scripts/bootstrap-mise.sh"
 if [[ "$use_1password" == true ]]; then ssh_flag=--1password-ssh; else ssh_flag=--keep-ssh; fi
 bootstrap_profile="$profile"
 if [[ "$bootstrap_profile" == --bootstrap-only ]]; then bootstrap_profile="${DEVSETUP_PROFILE:-personal}"; fi
-"$python_bin" "$repo_dir/scripts/setup.py" bootstrap --profile "$bootstrap_profile" --mise "$mise_bin" "$ssh_flag"
+# Remote Login is a separate, explicit operation after software installation.
+common_args=(--mise "$mise_bin" "$ssh_flag" --keep-remote-login)
+if [[ "$profile_explicit" == true ]]; then common_args+=(--profile "$bootstrap_profile"); fi
+common_args+=(${config_args[@]+"${config_args[@]}"})
+"$python_bin" "$repo_dir/scripts/setup.py" bootstrap "${common_args[@]}" ${skip_args[@]+"${skip_args[@]}"}
 
 if [[ "$profile" != --bootstrap-only ]]; then
-  if [[ "$install_dotfiles" == true ]]; then dotfiles_flag=--dotfiles; else dotfiles_flag=--skip-dotfiles; fi
-  remote_flag=--keep-remote-login
-  if [[ "$manage_remote_login" == true ]]; then
-    "$python_bin" "$repo_dir/scripts/setup.py" remote-login-check --profile "$profile" --mise "$mise_bin"
-    remote_flag=--remote-login
+  dotfiles_args=()
+  if [[ "$dotfiles_explicit" == true ]]; then
+    if [[ "$install_dotfiles" == true ]]; then dotfiles_args=(--dotfiles); else dotfiles_args=(--skip-dotfiles); fi
   fi
   exec "$repo_dir/scripts/with-sudo-askpass.sh" "$python_bin" "$repo_dir/scripts/setup.py" install \
-    --profile "$profile" --mise "$mise_bin" "$ssh_flag" "$dotfiles_flag" "$remote_flag"
+    "${common_args[@]}" ${dotfiles_args[@]+"${dotfiles_args[@]}"} ${skip_args[@]+"${skip_args[@]}"}
 fi

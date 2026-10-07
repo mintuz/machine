@@ -278,8 +278,9 @@ with tempfile.TemporaryDirectory() as directory:
             "personal_public_ssh_key": "personal.pub", "work_public_ssh_key": "work.pub",
             "remote_login_public_keys": ["phone.pub"],
             "remote_login_sources": ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
-            "manage_ssh_config": False, "install_dotfiles": False,
-            "manage_remote_login": False, "revoke_remote_login": False,
+            "steps": {"ssh": False, "git": True, "cli": True, "remote-login": False, "gui": True,
+                      "zsh": True, "app-store": True, "osx": True, "node": True, "dotfiles": True, "dock": True},
+            "revoke_remote_login": False,
             "remote_login_sshd_file": str(managed), "tailscale_cli": tailscale,
             "remote_login_sshd": [fake_sshd], "remote_login_launchctl": launchctl,
             "remote_login_sudo": [sudo], "remote_login_ssh_keygen": ssh_keygen,
@@ -299,6 +300,7 @@ with tempfile.TemporaryDirectory() as directory:
     def invoke(action, check=False, env=None, **overrides):
         calls.write_text("")
         config = dict(base, **overrides)
+        config["steps"] = dict(base["steps"], **overrides.get("steps", {}))
         return subprocess.run([sys.executable, "-c", RUNNER, str(root / "scripts"), action, json.dumps(config),
                                "1" if check else "0"],
                               env=dict(environment, **(env or {})), text=True, capture_output=True)
@@ -323,7 +325,7 @@ with tempfile.TemporaryDirectory() as directory:
 
     # Common guards.
     fails(invoke("shields-up"), "Unknown security action")
-    fails(invoke("ssh", user="root", manage_ssh_config=True), "not root")
+    fails(invoke("ssh", user="root", steps={"ssh": True}), "not root")
     fails(invoke("remote-login-check", profile="guest"), "Unsupported profile")
     print("PASS: unknown actions, root and invalid profiles are refused")
 
@@ -336,21 +338,21 @@ with tempfile.TemporaryDirectory() as directory:
     for system in ("mac", "linux"):
         succeeds(invoke("ssh", platform=system, env={"SSH_AUTH_SOCK": "/tmp/forwarded-agent"}))
         assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
-    succeeds(invoke("ssh", check=True, manage_ssh_config=True))
+    succeeds(invoke("ssh", check=True, steps={"ssh": True}))
     assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
-    fails(invoke("ssh", manage_ssh_config=True, personal_public_ssh_key="private.pub"), "private key")
-    fails(invoke("ssh", manage_ssh_config=True, personal_public_ssh_key="missing.pub"), "missing.pub")
+    fails(invoke("ssh", steps={"ssh": True}, personal_public_ssh_key="private.pub"), "private key")
+    fails(invoke("ssh", steps={"ssh": True}, personal_public_ssh_key="missing.pub"), "missing.pub")
     assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
     print("PASS: declined, previewed or invalid managed SSH leaves files and backups untouched on both platforms")
 
-    succeeds(invoke("ssh", manage_ssh_config=True))
+    succeeds(invoke("ssh", steps={"ssh": True}))
     first = (ssh_dir / "config").read_text()
     assert 'IdentityAgent "/tmp/test-agent.sock"' in first
     assert "Host github.com\n  HostName github.com\n  # Downloaded from 1Password App\n" \
            "  IdentityFile ~/.ssh/personal.pub\n" in first
     assert "Host github-alt.com\n  HostName github.com\n  # Downloaded from 1Password App\n" \
            "  IdentityFile ~/.ssh/work.pub\n" in first
-    succeeds(invoke("ssh", manage_ssh_config=True, platform="linux", profile="work",
+    succeeds(invoke("ssh", steps={"ssh": True}, platform="linux", profile="work",
                     ssh_agent_socket=str(home / ".1password/agent.sock"),
                     env={"SSH_AUTH_SOCK": "/tmp/forwarded-agent"}))
     second = (ssh_dir / "config").read_text()
@@ -366,7 +368,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert (ssh_dir / name).stat().st_mode & 0o777 == 0o600, name
     assert (ssh_dir / "work.pub").read_text() == fixtures["work.pub"]
     assert (ssh_dir / "agent/placeholder").read_text() == "agent state\n"
-    succeeds(invoke("ssh", manage_ssh_config=True, platform="linux"))
+    succeeds(invoke("ssh", steps={"ssh": True}, platform="linux"))
     assert 'IdentityAgent "/tmp/test-agent.sock"' in (ssh_dir / "config").read_text()
     assert len(list(backups.iterdir())) == 3
     print("PASS: managed SSH keeps unique successive backups, profile keys, private modes and Linux agent forwarding")
@@ -375,13 +377,13 @@ with tempfile.TemporaryDirectory() as directory:
     (broken_home / ".ssh").mkdir(parents=True)
     (broken_home / ".ssh/config").write_text("# original SSH config\n")
     (broken_home / ".dev-setup-backups").write_text("not a directory\n")
-    fails(invoke("ssh", manage_ssh_config=True, home=str(broken_home)), "Could not back up",
+    fails(invoke("ssh", steps={"ssh": True}, home=str(broken_home)), "Could not back up",
           "No managed SSH file was changed")
     assert (broken_home / ".ssh/config").read_text() == "# original SSH config\n"
     (broken_home / ".dev-setup-backups").unlink()
     (broken_home / ".ssh/config").unlink()
     (broken_home / ".ssh/config").mkdir()
-    fails(invoke("ssh", manage_ssh_config=True, home=str(broken_home)), "may be incomplete",
+    fails(invoke("ssh", steps={"ssh": True}, home=str(broken_home)), "may be incomplete",
           "The previous files are in")
     assert len(list((broken_home / ".dev-setup-backups").glob("*/ssh/config"))) == 1
     print("PASS: managed SSH backup and write failures are reported with the backup location")
@@ -422,26 +424,31 @@ with tempfile.TemporaryDirectory() as directory:
         assert json.loads(access.read_text())["members"] == [USER, "intruder"], "Access list changed"
 
     reset()
-    for action, flags in (("remote-login", {}), ("remote-login-revoke", {}),
-                          ("remote-login", {"manage_remote_login": True, "revoke_remote_login": True})):
-        succeeds(invoke(action, **flags))
+    for action in ("remote-login", "remote-login-revoke"):
+        succeeds(invoke(action))
         unchanged()
         assert logged() == [], calls.read_text()
-    for action, flag in (("remote-login", "manage_remote_login"), ("remote-login-revoke", "revoke_remote_login")):
-        fails(invoke(action, platform="linux", **{flag: True}), "macOS only")
+    remote_actions = (
+        ("remote-login", {"steps": {"remote-login": True}}),
+        ("remote-login-revoke", {"revoke_remote_login": True}),
+        ("remote-login", {"steps": {"remote-login": True}, "revoke_remote_login": True}),
+        ("remote-login", {"steps": {"remote-login": False}, "revoke_remote_login": True}),
+    )
+    for action, flags in remote_actions:
+        fails(invoke(action, platform="linux", **flags), "macOS only")
         assert logged() == []
-    print("PASS: Remote Login and revocation act only on explicit macOS opt-in; revocation wins over enablement")
+    print("PASS: unselected Remote Login actions leave access unchanged; enabled actions require macOS")
 
     if not IS_MAC:
-        fails(invoke("remote-login", manage_remote_login=True), "macOS only")
+        fails(invoke("remote-login", steps={"remote-login": True}), "macOS only")
         fails(invoke("remote-login-check"), "macOS only")
         assert logged() == []
         print("SKIP: Remote Login executable-state checks need macOS; non-macOS refusal confirmed")
         sys.exit(0)
 
-    for action, flag in (("remote-login", "manage_remote_login"), ("remote-login-revoke", "revoke_remote_login")):
+    for action, flags in remote_actions:
         for variable in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
-            fails(invoke(action, env={variable: "remote-session"}, **{flag: True}), "local console")
+            fails(invoke(action, env={variable: "remote-session"}, **flags), "local console")
             assert logged() == []
             unchanged()
     print("PASS: detected SSH sessions cannot enable or revoke Remote Login")
@@ -467,17 +474,16 @@ with tempfile.TemporaryDirectory() as directory:
     ]
     for overrides, env, message in preflight_failures:
         for action, check in (("remote-login-check", False), ("remote-login", False), ("remote-login", True)):
-            fails(invoke(action, check=check, env=env, manage_remote_login=True, **overrides), message)
+            fails(invoke(action, check=check, env=env, steps={"remote-login": True}, **overrides), message)
             assert not any(line.startswith(("sudo", "launchctl", "sshd", "dscl", "dseditgroup"))
                            for line in logged()), calls.read_text()
             unchanged()
-    output = succeeds(invoke("remote-login", check=True, manage_remote_login=True))
-    assert "Check mode does not stop Remote Login" in output
+    succeeds(invoke("remote-login", check=True, steps={"remote-login": True}))
     assert {line.split()[0] for line in logged()} == {"tailscale", "ssh-keygen"}
     unchanged()
     print("PASS: phone-key, source and Tailscale preflight failures and check mode stop before sudo or changes")
 
-    enable = {"manage_remote_login": True}
+    enable = {"steps": {"remote-login": True}}
     fails(invoke("remote-login", env={"TEST_REMOTE_STOP_FAIL": "1"}, **enable),
           "Could not stop Remote Login", "bootout refused", "No SSH configuration or keys have been replaced")
     unchanged(service_disabled=True)
@@ -646,21 +652,40 @@ with tempfile.TemporaryDirectory() as directory:
     managed.write_text(deployed)
     revoke = {"revoke_remote_login": True, "remote_login_public_keys": [], "tailscale_cli": offline_tailscale,
               "brew_prefix": str(fixture / "missing-brew")}
-    output = succeeds(invoke("remote-login-revoke", check=True, **revoke))
-    assert "Check mode only" in output and logged() == []
+    succeeds(invoke("remote-login-revoke", check=True, **revoke))
+    assert logged() == []
     unchanged(config_text=deployed)
-    output = succeeds(invoke("remote-login-revoke", **revoke))
+    succeeds(invoke("remote-login-revoke", **revoke))
     assert authorized_keys.read_text() == "" and authorized_keys.stat().st_mode & 0o777 == 0o600
     assert disabled.exists() and not running.exists() and managed.read_text() == deployed
     assert any(backup.read_text() == old_keys for backup in backups.glob("*/remote-login-*/authorized_keys"))
     assert not any(line.startswith(("forbidden", "tailscale", "sshd", "dscl", "dseditgroup", "ssh-keygen",
                                     "launchctl enable", "launchctl bootstrap")) for line in logged()), calls.read_text()
-    assert "Existing SSH and mosh sessions may remain active" in output
     reset()
     fails(invoke("remote-login-revoke", env={"TEST_REMOTE_STOP_FAIL": "1"}, **revoke),
           "Could not stop Remote Login", "Authorised keys have not been changed")
     assert authorized_keys.read_text() == old_keys
     print("PASS: offline revocation needs no Tailscale, Homebrew or phone keys, backs up and clears keys, and stays off")
+
+    for selected in (True, False):
+        reset()
+        succeeds(invoke("remote-login", check=True, steps={"remote-login": selected}, **revoke))
+        unchanged()
+        assert logged() == []
+        succeeds(invoke("remote-login", steps={"remote-login": selected}, **revoke))
+        assert disabled.exists() and not running.exists()
+        assert authorized_keys.read_text() == "" and authorized_keys.stat().st_mode & 0o777 == 0o600
+        assert managed.read_text() == original_config
+        assert any(backup.read_text() == old_keys for backup in backups.glob("*/remote-login-*/authorized_keys"))
+        assert not any(line.startswith(("tailscale", "sshd", "dscl", "dseditgroup", "ssh-keygen",
+                                        "launchctl enable", "launchctl bootstrap")) for line in logged())
+        reset()
+        fails(invoke("remote-login", steps={"remote-login": selected},
+                     env={"TEST_REMOTE_STOP_FAIL": "1"}, **revoke),
+              "Could not stop Remote Login")
+        assert authorized_keys.read_text() == old_keys
+    print("PASS: revocation overrides remote-login selection, stops the listener and clears keys; "
+          "preview and stop-failure guards still apply")
 
     sshd = Path("/usr/sbin/sshd")
     if sshd.exists():

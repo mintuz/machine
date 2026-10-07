@@ -50,24 +50,35 @@ Without a terminal or an explicit flag, setup preserves SSH:
 ./install.sh personal --keep-ssh
 ```
 
-On macOS, interactive full setup also asks:
+**Remote Login is a separate step after installation.** The installer
+does not prompt for it, run its preflight or enable it, even if a local
+file sets `steps.remote-login = true`.
 
-```text
-Configure and enable Remote Login on this Mac? [y/N]
+The default GUI step includes Tailscale. After setup, sign in and complete
+the [Remote Login prerequisites](#before-you-start), network policy,
+firewall and [phone-key preparation](#set-up-the-mac). A skipped or failed
+GUI installation does not satisfy those prerequisites. Read the FileVault
+limits before enabling access, and keep Shields Up on.
+
+Enablement backs up and replaces your authorised keys and can interrupt
+existing SSH sessions. From the Mac's local console, run one command:
+
+```bash
+./remote-login.sh
 ```
 
-Choose Yes only from the Mac's local console, after preparing phone public
-keys, connecting Tailscale and completing the
-[Remote Login prerequisites](#before-you-start). Setup replaces all
-authorised keys with the listed phone keys. After bootstrap, it runs a
-read-only preflight before requesting setup sudo access. A failed preflight
-stops setup. Keep Shields Up on until setup and the policy/firewall checks
-succeed.
+The command checks prerequisites before requesting sudo or changing access.
+It then validates and enables Remote Login. You do not need to run a
+separate preflight command first. To use a local configuration file:
 
-Enter, No and end of input leave existing Remote Login access unchanged.
-They do not revoke access. Ubuntu, bootstrap-only runs, unattended runs and
-detected SSH sessions do not ask or enable Remote Login. The later explicit
-command is `mise run remote-login`.
+```bash
+./remote-login.sh --config ./local.toml
+```
+
+The launcher uses the bootstrapped mise/Python installation. Relative
+configuration paths resolve from your current directory. For a read-only
+readiness check without enablement, `mise run remote-login-check` remains
+available.
 
 Dotfiles install by default. On Ubuntu, interactive full setup asks
 `Install your dotfiles? [Y/n]` before bootstrap. Enter and unattended runs
@@ -118,17 +129,17 @@ bootstrap and do not prompt for feature choices.
 | `mise run bootstrap-only` | Install prerequisites and shell activation |
 | `mise run install --profile work` | Run full setup without bootstrap or prompts |
 | `mise run packages --profile work` | Preview inventory selection without changes |
-| `mise run cli --profile work` | Install CLI tools and fzf integration |
+| `mise run cli --profile work` | Install native/non-Node CLI tools and fzf integration |
 | `mise run gui` | Install or upgrade Mac applications |
 | `mise run app-store` | Install Mac App Store apps |
 | `mise run osx` / `mise run dock` | Apply macOS preferences / Dock layout |
 | `mise run git` | Install Git and apply the configured identity and settings |
 | `mise run zsh` | Configure the login shell, Oh My Zsh and autosuggestions |
-| `mise run node` | Install mise-managed Node LTS, preserve npm globals and configure pnpm |
+| `mise run node` | Install Node, pnpm and npm-backed mise tools; preserve globals and configure pnpm |
 | `mise run dotfiles` | Install or refresh the separate dotfiles repository |
 | `mise run ssh --profile work` | Explicitly back up and configure 1Password SSH |
 | `mise run remote-login-check` | Check Remote Login prerequisites read-only, without sudo |
-| `mise run remote-login` | Enable key-only tailnet Remote Login from the local console |
+| `./remote-login.sh` | Check prerequisites, then enable key-only tailnet Remote Login from the local console |
 | `mise run remote-login-revoke` | Disable SSH startup/listener and back up then clear your authorised keys |
 | `mise run update` | Update installed packages, runtimes, global packages and models |
 | `mise run check` | Run non-installing syntax, configuration and safety checks |
@@ -197,6 +208,14 @@ anything. `tlrc` replaces the disabled `tldr` formula and provides the same
 Go and xcodes use mise; xcodes uses its published release rather than a
 third-party Homebrew formula. The other native package declarations remain.
 
+[OMP](https://omp.sh/) is a required shared CLI package for both profiles
+on macOS and Ubuntu, installed through
+[`can1357/tap/omp`](https://github.com/can1357/homebrew-tap).
+The [Tailscale Mac app](https://formulae.brew.sh/cask/tailscale-app) is in
+the shared Mac GUI inventory as `tailscale-app`, not the App Store
+inventory. Skipping `app-store` does not skip it; skipping `gui` does.
+Tailscale sign-in and any required macOS extension approval remain manual.
+
 ## Configuration
 
 `defaults.toml` contains shared preferences and `[mac]` / `[linux]` defaults.
@@ -210,18 +229,99 @@ mise run git --profile work --config "$HOME/.config/dev-machine-setup.toml"
 
 - `git_name` and `git_email` set one Git identity. A profile selects package
   layers and the primary managed GitHub SSH key, not a different Git identity.
-- `manage_ssh_config` defaults to false. `mise run ssh` is the explicit
+- `steps.ssh` defaults to false. `mise run ssh` is the explicit
   standalone opt-in. `ssh_agent_socket` and the public key filenames remain
   configurable. Each managed write has a unique backup.
-- `install_dotfiles` defaults to true. Use `--skip-dotfiles` for one setup
-  run. `dotfiles_repo` and `dotfiles_version` select the external checkout.
-- `manage_remote_login` and `revoke_remote_login` default to false. A false
-  flag leaves earlier access unchanged. Revocation wins when both are true.
+- `steps.dotfiles` defaults to true. Use `--skip dotfiles` or
+  `--skip-dotfiles` for one setup run. `dotfiles_repo` and
+  `dotfiles_version` select the external checkout.
+- `steps.remote-login` and `revoke_remote_login` default to false.
+  Disabling the step leaves earlier access unchanged. Explicit revocation
+  wins, including with `remote-login --revoke-remote-login`.
   Phone keys, source ranges and `tailscale_cli` remain configurable.
 - `pnpm_home` and `pnpm_global_packages` control pnpm global packages.
 - `brew_prefix` and `brew` select the native package prefix and executable.
   Defaults are `/opt/homebrew` on macOS and `/home/linuxbrew/.linuxbrew` on
   Ubuntu. Bootstrap uses these standard ARM prefixes.
+- `macos_preferences` and `dock_items` under `[mac]` hold the arguments for
+  macOS preferences and Dock entries. Override these lists in your local
+  file instead of editing Python. `{home}` in preference values expands to
+  your home directory. Dock paths may start with `~/`.
+  An empty Dock list leaves the Dock untouched. An empty preferences list
+  skips configurable defaults, but Library visibility and automatic-update
+  checks still run; skip `osx` to leave all macOS preferences untouched.
+  Setup no longer writes `LSQuarantine=false`; it does not undo that setting
+  if an earlier run applied it.
+
+Unknown settings, unknown steps and non-boolean step choices are errors.
+The former root settings `manage_ssh_config`, `install_dotfiles` and
+`manage_remote_login` are replaced by the corresponding `[steps]` entries;
+update local files before running this version.
+
+### Select setup and maintenance components
+
+Skip named components for one run:
+
+```bash
+./install.sh personal --skip app-store --skip dock
+mise run install --profile work --skip app-store
+mise run update --skip app-store
+```
+
+For saved choices, create a local file and pass it explicitly to each run:
+
+```toml
+# ~/.config/dev-machine-setup.toml
+[mac.steps]
+app-store = false
+dock = false
+```
+
+```bash
+./install.sh personal --config "$HOME/.config/dev-machine-setup.toml"
+mise run update --config "$HOME/.config/dev-machine-setup.toml"
+mise run packages --config "$HOME/.config/dev-machine-setup.toml"
+```
+
+Supported names are `ssh`, `git`, `cli`, `remote-login`, `gui`, `zsh`,
+`app-store`, `osx`, `node`, `dotfiles` and `dock`. The `[steps]` table merges
+by key: shared values, then the selected platform, then each explicit file.
+Command-line choices take precedence. Ordinary lists replace earlier lists.
+Relative configuration paths resolve from the directory where you invoked
+the command, including paths supplied through mise.
+
+The installer preserves its pre-bootstrap SSH consent prompt. No, Enter
+and unattended defaults preserve SSH client configuration, even if a file
+enables that step. Remote Login enablement is always excluded by the
+installer; use `./remote-login.sh` afterwards. Enter at the dotfiles prompt keeps the configured
+choice; an explicit Yes or No overrides it. If no profile argument or
+environment value was supplied, the file may select the profile.
+The locked Python validates TOML after bootstrap, so malformed configuration
+does not promise zero bootstrap changes.
+
+Skipping means leave the component's current state alone. It does not
+uninstall packages, undo settings or prevent retained components from
+installing their native prerequisites. For example, skipping `git` skips
+Git configuration, not the Git executable needed for dotfiles. Skipping
+`cli` also skips fzf integration. The separate `node` step owns Node, pnpm,
+all `npm:` mise providers and npm migration; skipping it does not run those
+operations inside `cli`. Homebrew dependencies and the external dotfiles
+installer can still have their own effects.
+
+`update` accepts `--skip cli`, `gui`, `node` and `app-store`, and honours the
+same saved choices. `app-store = false` excludes both app installation and
+`mas upgrade`; it does not change Apple's own automatic updates. `cli`
+owns native formulae, CLI casks, non-Node mise tools and Ollama models.
+`gui` owns other installed casks. `node` owns managed Node/npm/pnpm updates.
+Other setup components have no maintenance operation.
+
+A direct component command is an explicit one-off request:
+`mise run app-store --config PATH` runs even when the file excludes
+App Store from aggregate setup. The command reports this override.
+Contradictory explicit flags are errors. Mandatory bootstrap and preflight
+checks are not selectable steps, and no exclusion suppresses revocation.
+`--check` uses the selected components but remains a limited preview.
+
 
 Backups use `~/.dev-setup-backups`. Existing `~/.mac-setup-backups` directories
 remain untouched.
@@ -244,6 +344,11 @@ Setup refuses a dirty dotfiles checkout. Branch updates are fast-forward
 only. An exact revision checks out that commit without deleting local
 branches. Before moving away from an unreferenced detached commit, setup
 requires you to save it on a branch. It never resets or discards your work.
+An existing checkout's origin must also match `dotfiles_repo`. A mismatch
+stops before fetching or running its installer. Save your local work, then
+move the checkout aside or select its actual repository; setup never
+rewrites origin silently.
+
 
 The dotfiles shell detects the platform, activates mise, preserves a custom
 `PNPM_HOME` and reads project `.nvmrc` / `.node-version` files. Its
@@ -265,19 +370,40 @@ packages that cannot be transferred are reported. Legacy providers transfer
 only before the machine fragment first declares Node. Later runs do not
 restore packages you uninstall. Other nvm versions are reported, not removed.
 A transfer or configuration failure keeps the old provider available and
-returns failure. Custom npm prefixes are honoured; `.npmrc` is not rewritten.
-Old nvm installations are not deleted.
+returns failure. A failed probe of the previous npm directory is an error,
+not an empty package list. Custom npm prefixes are honoured; `.npmrc` is not
+rewritten. Old nvm installations are not deleted.
+Node probes must match mise's installed-runtime metadata. A Node executable
+found only on `PATH` is not accepted as a mise migration source or target.
 
-`mise run update` maintains all installed Homebrew packages, not just the
-selected profile, plus mise runtimes, npm/pnpm globals, Mac App Store apps
-and Ollama models. Independent components continue after a failure, then the
-command returns failure with a summary. Missing tools are skipped, not
-reported as updated. Mise upgrades use `--no-prune` to retain old runtimes
-and their npm globals. This command does not run Ubuntu system upgrades.
+The managed fragment pins the successfully transferred Node version.
+The adjacent `dev-machine-setup.node.json` retains the requested selector
+(such as `lts`) and the original source while a transfer is pending.
+Rerun the failed command to resume from that source. If the recorded source
+was removed, restore it before retrying; setup preserves the pending state
+and working pin. Do not delete the pending state to bypass a migration
+failure. A committed transfer does not replay legacy globals, even if
+clearing its pending state was interrupted.
+Conflicting user mise configuration is reported before the old provider is
+retired; setup does not rewrite that configuration.
+
+With the default component choices, `mise run update` maintains all
+installed Homebrew packages, not just the selected profile, plus managed
+mise runtimes, npm/pnpm globals, Mac App Store apps and Ollama models.
+Exclusions filter categories, not just the current profile's inventory;
+cleanup is scoped to included packages. Maintenance preserves Homebrew's
+pinning and non-greedy defaults. Filtered cask maintenance selects eligible
+outdated apps instead of naming every installed app. Homebrew can still
+update a native dependency of an included package.
+Independent components continue after a failure, then the command returns
+failure with a summary. Missing tools are skipped, not reported as updated.
+Non-Node mise upgrades use `--no-prune`; Node installs its requested target
+without changing the working pin until transfer succeeds. This command does
+not run Ubuntu system upgrades.
 
 ## Remote access from an iPhone
 
-`mise run remote-login` configures SSH access to this Mac from your Tailscale
+`./remote-login.sh` configures SSH access to this Mac from your Tailscale
 network (tailnet), for example from an iPhone with Secure ShellFish or Moshi.
 It works on macOS only, and only when you opt in. The key-only and
 source-address limits apply to normal SSH **after FileVault unlocks**, not
@@ -403,18 +529,7 @@ for reviewing other exposed services.
    if only that device should log in. If its addresses change, update the
    list at the Mac. This authentication limit does not replace the policy
    or firewall checks.
-6. Run the read-only prerequisite check as your normal user:
-
-   ```bash
-   mise run remote-login-check
-   ```
-
-   This checks phone keys, Tailscale and the SSH command path without sudo
-   or changes to services, configuration or keys. It does not deploy
-   configuration, run the effective SSH settings gate or activate SSH.
-   A pass is **not** a full SSH configuration preview, proof that enablement
-   will succeed, or verification of policy or firewall rules.
-7. Before enabling, review the key list: each run backs up and **replaces
+6. Before enabling, review the key list: each run backs up and **replaces
    all of `~/.ssh/authorized_keys`** with these keys. Hand-added keys and
    Moshi Easy Pair keys not in the list will be removed. Setup also limits
    Remote Login to your account. Existing SSH or mosh sessions may be
@@ -422,35 +537,44 @@ for reviewing other exposed services.
    At the Mac's local console, run:
 
    ```bash
-   mise run remote-login
+   ./remote-login.sh
    ```
 
+   This command checks phone keys, Tailscale and the SSH command path before
+   requesting sudo or changing services, configuration or keys. It then
+   deploys and validates the effective SSH settings before enabling access.
+   A prerequisite pass alone is not proof of network isolation.
    Enter your sudo password if asked. Keep the connection details and
    host key fingerprints. If the run fails, do not enable Remote Login
    manually; fix the reported cause and rerun locally.
-8. Only after enablement succeeds and the full policy and firewall checks pass,
+7. Only after enablement succeeds and the full policy and firewall checks pass,
    explicitly allow inbound tailnet traffic:
 
    ```bash
    tailscale set --shields-up=false
    ```
 
-9. Set up the iPhone as described below. Then verify an actual iPhone
+8. Set up the iPhone as described below. Then verify an actual iPhone
    connection and denied connections from other devices, including LAN sources.
    Check that unrelated Mac services are still unreachable.
    If any result differs from the intended rules,
    restore Shields Up and use `mise run remote-login-revoke` locally while you
    fix the policy or firewall. Shields Up alone does not block LAN access.
 
+For an optional read-only readiness check, run `mise run remote-login-check`.
+This does not deploy configuration, run the effective SSH settings gate or
+activate SSH. It is not a full configuration preview or proof that
+enablement will succeed.
+
 ### Set up the iPhone
 
 1. In the Tailscale app, open Settings > VPN On Demand. Set Wi-Fi and
    Cellular to **Always**.
-2. In each app, add a server. Use the host name that `mise run remote-login`
+2. In each app, add a server. Use the host name that `./remote-login.sh`
    showed, your Mac account name, and port 22.
 3. In Moshi, keep the connection type at **Auto**.
 4. Connect. Compare the host key fingerprint with the fingerprints that
-   `mise run remote-login` showed. If they are different, do not continue.
+   `./remote-login.sh` showed. If they are different, do not continue.
 5. In Moshi's session picker, open the **Herdr** tab and tap a session to
    attach to it. Moshi lists only running sessions. If there is none, tap
    **Skip**, then run `herdr` to start one.
@@ -478,9 +602,9 @@ Work inside herdr keeps running on the Mac when the phone disconnects.
 For changes that leave at least one trusted key:
 
 1. Add or remove filenames in `remote_login_public_keys`.
-2. Run `mise run remote-login-check` to check the revised inputs, then
-   `mise run remote-login` from the local console. Enablement interrupts the
-   listener while it rechecks the effective SSH configuration.
+2. Run `./remote-login.sh` from the local console. It checks the revised
+   inputs before changing access. Enablement interrupts the listener while
+   it rechecks the effective SSH configuration.
 
 Each enable run replaces `~/.ssh/authorized_keys` with the listed keys. Keys added
 by hand or by Moshi's Easy Pair are removed. Before each change to a nonempty
@@ -496,7 +620,7 @@ access through an already authenticated SSH or mosh session.
 
 ### Turn off remote access
 
-Setting `manage_remote_login` to false does not undo an earlier run. At the
+Setting `steps.remote-login` to false does not undo an earlier run. At the
 local console, run:
 
 ```bash
@@ -556,7 +680,7 @@ sessions.** Use the incident steps below if an active session is untrusted.
 5. Review what the compromised session could access, including credentials
    and jobs it started. Rotate affected credentials where needed. Re-enable
    access only with trusted replacement keys, reviewed policy/firewall
-   rules, and a successful `mise run remote-login` run; then release Shields Up
+   rules, and a successful `./remote-login.sh` run; then release Shields Up
    manually as in setup.
 
 ### Remote Login troubleshooting
@@ -640,7 +764,30 @@ policies, npm migration, safe dotfiles updates and SSH safeguards. Temporary
 directories and substituted executables isolate changes. On macOS it also
 runs the real `/usr/sbin/sshd -T` gate against temporary configurations.
 
-Validation performed on 2026-10-06:
+Validation for the component-selection and Node-recovery changes:
+
+- `python3 -B scripts/check.py` passed on macOS, including failed-transfer
+  retries, failed source inspection, interrupted journal cleanup, symlink
+  guards, component exclusions and revocation precedence.
+- An isolated smoke run exercised the actual Bash installer, Python
+  dispatcher and Git with temporary configuration and substituted package,
+  bootstrap and sudo commands. It verified layered paths containing spaces,
+  App Store exclusions during setup and maintenance, explicit component
+  overrides, saved dotfiles exclusions and a file-selected work profile.
+- Read-only package selection succeeded for both Mac profiles.
+- An isolated run used the checksummed, pinned mise executable with temporary
+  fake Node executables. It confirmed actual `PATH` fallback, rejection of
+  unregistered sources and targets, concrete pin selection with a newer
+  version present, and preservation of the pin when a pending source vanished.
+- Actual update CLI runs with stateful package substitutes verified CLI-only
+  and GUI-only maintenance. Excluded packages, pinned versions, unavailable
+  packages and self-updating casks remained unchanged.
+
+These checks did not install real runtimes or packages, change host services,
+or rerun fresh-machine provisioning. They do not establish a complete
+runtime installation, package migration and recovery cycle on a disposable machine.
+
+Earlier validation on 2026-10-06, before these changes:
 
 - `python3 -B scripts/check.py` passed on macOS. `mise run check` passed in
   Ubuntu 24.04 ARM64. Checks cover stop-before-write, configuration rollback,

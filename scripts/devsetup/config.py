@@ -17,7 +17,9 @@ from typing import Mapping, Sequence
 PROFILES = ("personal", "work")
 DEFAULT_PROFILE = "personal"
 PLATFORMS = ("mac", "linux")
-PER_RUN_FLAGS = ("manage_ssh_config", "install_dotfiles", "manage_remote_login", "revoke_remote_login")
+STEPS = ("ssh", "git", "cli", "remote-login", "gui", "zsh", "app-store",
+         "osx", "node", "dotfiles", "dock")
+PER_RUN_FLAGS = (*STEPS, "revoke_remote_login")
 STRING_KEYS = ("git_email", "git_name", "dotfiles_repo", "dotfiles_version",
                "personal_public_ssh_key", "work_public_ssh_key", "shell_path",
                "ssh_agent_socket", "pnpm_home", "brew_prefix")
@@ -34,6 +36,9 @@ TEST_ONLY_KEYS = (
     "remote_login_dseditgroup", "remote_login_host_key", "remote_login_port",
     "remote_login_port_timeout", "remote_login_config_owner", "remote_login_config_group",
 )
+SETTING_KEYS = frozenset((*STRING_KEYS, *LIST_KEYS, *MAC_PATH_KEYS, "brew", "profile",
+                          "steps", "revoke_remote_login", "remote_login_sshd",
+                          "remote_login_launchctl", "macos_preferences", "dock_items"))
 
 
 class ConfigError(RuntimeError):
@@ -78,20 +83,46 @@ def _read_toml(path: Path) -> dict:
         raise ConfigError(f"Invalid TOML in {path}: {error}") from error
 
 
+def _merge(target: dict, layer: dict) -> None:
+    """Merge ordinary settings by replacement and the finite steps table by key."""
+    for key, value in layer.items():
+        if key == "steps":
+            target["steps"] = {**target.get("steps", {}), **value}
+        else:
+            target[key] = value
+
+
+def _settings_table(table: dict, source: Path, label: str, *, platform: bool = False) -> None:
+    forbidden = (*DETECTED_KEYS, "machine_type", *TEST_ONLY_KEYS)
+    if platform:
+        forbidden += ("profile",)
+    for key, value in table.items():
+        if key in forbidden:
+            raise ConfigError(f"{source}: '{key}' cannot be set in {label}.")
+        if key not in SETTING_KEYS:
+            raise ConfigError(f"{source}: unknown setting '{key}' in {label}.")
+        if key == "steps":
+            if not isinstance(value, dict):
+                raise ConfigError(f"{source}: {label}.steps must be a table.")
+            for step, enabled in value.items():
+                if step not in STEPS:
+                    raise ConfigError(f"{source}: unknown step '{step}' in {label}.steps.")
+                if not isinstance(enabled, bool):
+                    raise ConfigError(f"{source}: steps.{step} must be true or false.")
+
+
 def _layer(settings: dict, platform: str, source: Path) -> dict:
-    """Flatten one file: shared keys, then the table for the detected platform."""
-    for key in DETECTED_KEYS + ("machine_type",) + TEST_ONLY_KEYS:
-        if key in settings:
-            hint = " Use --profile or 'profile' instead." if key == "machine_type" else ""
-            raise ConfigError(f"{source}: '{key}' cannot be set in a settings file.{hint}")
-    merged = {key: value for key, value in settings.items() if key not in PLATFORMS}
-    table = settings.get(platform, {})
-    if not isinstance(table, dict):
-        raise ConfigError(f"{source}: [{platform}] must be a table.")
-    for key in DETECTED_KEYS + ("profile", "machine_type") + TEST_ONLY_KEYS:
-        if key in table:
-            raise ConfigError(f"{source}: '{key}' cannot be set in [{platform}].")
-    merged.update(table)
+    """Validate the complete file, then apply shared and selected-platform settings."""
+    shared = {key: value for key, value in settings.items() if key not in PLATFORMS}
+    _settings_table(shared, source, "shared settings")
+    for name in PLATFORMS:
+        table = settings.get(name, {})
+        if not isinstance(table, dict):
+            raise ConfigError(f"{source}: [{name}] must be a table.")
+        _settings_table(table, source, f"[{name}]", platform=True)
+    merged = {}
+    _merge(merged, shared)
+    _merge(merged, settings.get(platform, {}))
     return merged
 
 
@@ -121,13 +152,42 @@ def _validate(config: dict) -> None:
         value = config.get(key)
         if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
             raise ConfigError(f"Setting '{key}' must be a list of non-empty strings.")
-    for key in PER_RUN_FLAGS:
-        if not isinstance(config.get(key), bool):
-            raise ConfigError(f"Setting '{key}' must be true or false.")
+    if not isinstance(config.get("revoke_remote_login"), bool):
+        raise ConfigError("Setting 'revoke_remote_login' must be true or false.")
+    steps = config.get("steps")
+    if not isinstance(steps, dict) or set(steps) != set(STEPS):
+        raise ConfigError("The defaults must define every supported step in [steps].")
+    if not all(isinstance(value, bool) for value in steps.values()):
+        raise ConfigError("Every [steps] value must be true or false.")
+    if "remote_login_sshd" in config:
+        command = config["remote_login_sshd"]
+        if not isinstance(command, list) or not command or not all(
+                isinstance(part, str) and part for part in command):
+            raise ConfigError("Setting 'remote_login_sshd' must be a nonempty list of command arguments.")
+    if "remote_login_launchctl" in config:
+        command = config["remote_login_launchctl"]
+        if not isinstance(command, str) or not Path(command).is_absolute():
+            raise ConfigError("Setting 'remote_login_launchctl' must be an absolute executable path.")
     if config["platform"] == "mac":
         for key in MAC_PATH_KEYS:
             if not isinstance(config.get(key), str) or not config[key]:
                 raise ConfigError(f"Setting '{key}' must be a non-empty string on macOS.")
+        for key in ("macos_preferences", "dock_items"):
+            rows = config.get(key)
+            if not isinstance(rows, list) or not all(isinstance(row, list) and row
+                    and all(isinstance(value, str) for value in row) for row in rows):
+                raise ConfigError(f"Setting '{key}' must be a list of argument lists.")
+        for row in config["macos_preferences"]:
+            if len(row) not in (3, 4) or not all(row[:2]):
+                raise ConfigError("Each macos_preferences entry needs a domain, key and value, "
+                                  "with an optional value type.")
+            if len(row) == 4 and row[2] not in ("-bool", "-int", "-float", "-string", "-date", "-data"):
+                raise ConfigError(f"Unsupported macOS preference type {row[2]!r}.")
+        for row in config["dock_items"]:
+            if any(not part for part in row[1:]) or (row[0] and not Path(_expand(
+                    row[0], Path(config["home"]))).is_absolute()):
+                raise ConfigError("Each dock_items entry must start with an absolute path, ~/ or "
+                                  "an empty spacer path, followed by nonempty arguments.")
 
 
 def _expand(value: str, home: Path) -> str:
@@ -160,12 +220,17 @@ def load(*, repo_dir: Path, profile: str | None = None, overrides: Sequence[Path
         layer = _layer(_read_toml(path), platform, path)
         if "profile" in layer:
             file_profiles.append((path, layer.pop("profile")))
-        config.update(layer)
+        _merge(config, layer)
 
     for key, value in (flags or {}).items():
         if key not in PER_RUN_FLAGS:
             raise ConfigError(f"Unknown per-run flag '{key}'.")
-        config[key] = value
+        if not isinstance(value, bool):
+            raise ConfigError(f"Per-run choice '{key}' must be true or false.")
+        if key == "revoke_remote_login":
+            config[key] = value
+        else:
+            config["steps"][key] = value
 
     account = pwd.getpwuid(os.getuid())
     home = Path(environ.get("HOME") or account.pw_dir).resolve()
