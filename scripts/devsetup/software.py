@@ -829,7 +829,8 @@ def _update(config, shell):
         excluded_cleanup = set()
         cleanup_safe = True
         unrestricted = steps["cli"] and steps["gui"]
-        cli_casks = {entry.name for path in (Path(config["repo_dir"]) / "packages").rglob("*.toml")
+        cli_casks = {entry.name.rsplit("/", 1)[-1]
+                     for path in (Path(config["repo_dir"]) / "packages").rglob("*.toml")
                      for entry in _parse(path, config["repo_dir"])
                      if entry.kind in ("cli", "cli-optional") and entry.manager == "brew-cask"}
         for flag, name, enabled in (("--formula", "Homebrew formulae", steps["cli"]),

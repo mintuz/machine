@@ -823,7 +823,7 @@ with tempfile.TemporaryDirectory() as directory:
 # Maintenance categories cover installed packages across profiles, never only selected inventory.
 BREW_CLI_CASKS = {"codex", "work-cli", "pinned-cli", "missing-cli", "auto-cli", "latest-cli"}
 BREW_REPO = {**CLI_REPO, "mac/work/cli.toml": '[packages]\n' + "\n".join(
-    f'"brew-cask:{name}" = {{ version = "latest", greedy = true }}'
+    f'"brew-cask:acme/tools/{name}" = {{ version = "latest", greedy = true }}'
     for name in sorted(BREW_CLI_CASKS - {"codex"}))}
 
 

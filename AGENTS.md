@@ -225,7 +225,8 @@ globals, Mac App Store apps and Ollama models. Apply the same typed
 component policy: `cli` owns formulae, CLI casks, non-Node mise tools and
 Ollama; `gui` owns other installed casks; `node` owns Node/npm/pnpm;
 `app-store` owns mas maintenance. Classify CLI casks across all inventory
-layers, not only the current profile. Scope cleanup to included packages.
+layers, not only the current profile. Match fully qualified cask declarations
+to Homebrew's installed short tokens. Scope cleanup to included packages.
 Homebrew can still upgrade dependencies of included packages.
 Preserve Homebrew's bulk upgrade semantics for formulae and unfiltered
 casks. For filtered casks, select non-pinned entries from non-greedy outdated
