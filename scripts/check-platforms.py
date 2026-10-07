@@ -5,6 +5,7 @@ Everything runs in temporary directories with substitute commands: no sudo,
 network, package installs, or changes to this machine.
 """
 import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -158,6 +159,38 @@ for argv in (["dotfiles", "--skip-dotfiles"], ["install", "--keep-ssh", "--1pass
             assert exit_status.code == 2
         else:
             raise AssertionError(f"{argv} was accepted")
+
+
+# Non-fatal step problems let later steps run, then appear in one final list,
+# also when a later step stops setup.
+class _Steps:
+    def __init__(self, problems, fatal=None):
+        self.calls, self.problems, self.fatal = [], problems, fatal
+
+    def __getattr__(self, module):
+        def run(action, config, check=False):
+            self.calls.append(action)
+            if action == self.fatal:
+                raise RuntimeError(f"{action} stopped")
+            return self.problems.get(action)
+        return type("Module", (), {"run": staticmethod(run)})
+
+
+steps_config = {"platform": "mac", "revoke_remote_login": False,
+                "steps": {name: name != "remote-login" for name in config_module.STEPS}}
+for fatal in (None, "node"):
+    modules = _Steps({"gui": ["GUI app bad: advice"], "app-store": ["App Store app 1: advice"]}, fatal)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        if fatal:
+            expect_error("node stopped", cli.dispatch, "install", steps_config, modules)
+        else:
+            assert cli.dispatch("install", steps_config, modules) == [
+                "GUI app bad: advice", "App Store app 1: advice"]
+    assert ("dock" in modules.calls) == (fatal is None), modules.calls
+    summary = output.getvalue().split("These items need attention:")[-1]
+    assert "GUI app bad: advice" in summary and "App Store app 1: advice" in summary, output.getvalue()
+print("PASS: non-fatal step problems let later steps run and are listed at the end, also after a fatal error")
 
 
 # install.sh prompts and hand-off --------------------------------------------

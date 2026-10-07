@@ -5,9 +5,9 @@
 # Productivity and office
 "mas:1435957248" = { name = "Drafts" }
 "mas:904280696" = { name = "Things" }
-"mas:409183694" = { name = "Keynote" }
-"mas:409203825" = { name = "Numbers" }
-"mas:409201541" = { name = "Pages" }
+"mas:361285480" = { name = "Keynote" }
+"mas:361304891" = { name = "Numbers" }
+"mas:361309726" = { name = "Pages" }
 
 # Apple creative and developer tools
 "mas:682658836" = { name = "GarageBand" }
@@ -25,8 +25,6 @@
 
 # Photo and creative tools
 "mas:953286746" = { name = "Darkroom" }
-"mas:1616831348" = { name = "Affinity Designer 2" }
-"mas:1616822987" = { name = "Affinity Photo 2" }
 
 # System utilities
 "mas:937984704" = { name = "Amphetamine" }

@@ -49,31 +49,44 @@ class _Modules:
         return importlib.import_module(f"devsetup.{name}")
 
 
-def dispatch(action: str, config: dict, modules, *, check: bool = False) -> None:
-    """Run one action. ``modules`` provides host, software, and security objects."""
+def dispatch(action: str, config: dict, modules, *, check: bool = False) -> list[str]:
+    """Run one action. ``modules`` provides host, software, and security objects.
+
+    Return the non-fatal problems from all steps. They are also listed at the
+    end of the output, including when a later step stops with an error.
+    """
+    issues: list[str] = []
+
     def step(module: str, name: str) -> None:
-        getattr(modules, module).run(name, config, check=check)
+        issues.extend(getattr(modules, module).run(name, config, check=check) or [])
 
     if action in MAC_ONLY and config["platform"] != "mac":
         print(f"{action}: skipped; it applies to macOS only.")
-        return
-    if action in PREFLIGHT:
-        step("host", "preflight")
-    if action == "install":
-        _install(config, step)
-    elif action == "bootstrap":
-        step("host", "bootstrap")
-    elif action == "cli":
-        step("software", "cli")
-        step("host", "fzf")
-    elif action in SOFTWARE:
-        step("software", action)
-    elif action in HOST:
-        step("host", action)
-    elif action in SECURITY:
-        step("security", action)
-    else:
-        raise ValueError(f"Unknown action {action!r}")
+        return issues
+    try:
+        if action in PREFLIGHT:
+            step("host", "preflight")
+        if action == "install":
+            _install(config, step)
+        elif action == "bootstrap":
+            step("host", "bootstrap")
+        elif action == "cli":
+            step("software", "cli")
+            step("host", "fzf")
+        elif action in SOFTWARE:
+            step("software", action)
+        elif action in HOST:
+            step("host", action)
+        elif action in SECURITY:
+            step("security", action)
+        else:
+            raise ValueError(f"Unknown action {action!r}")
+    finally:
+        if issues:
+            print("\nThese items need attention:", flush=True)
+            for issue in issues:
+                print(f"  - {issue}", flush=True)
+    return issues
 
 
 def _install(config: dict, step) -> None:
@@ -185,7 +198,10 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["PATH"] = os.pathsep.join([f"{prefix}/bin", f"{prefix}/sbin", os.environ.get("PATH", "")])
         mode = " (check mode: no changes)" if args.check else ""
         print(f"{args.action}: {config['platform']} / {config['profile']}{mode}")
-        dispatch(args.action, config, _Modules(), check=args.check)
+        issues = dispatch(args.action, config, _Modules(), check=args.check)
+        if issues:
+            count = "1 item needs" if len(issues) == 1 else f"{len(issues)} items need"
+            raise RuntimeError(f"{args.action} finished, but {count} attention. See the list above.")
     except RuntimeError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
