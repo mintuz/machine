@@ -24,22 +24,27 @@
 "brew-cask:1password" = "latest"
 
 # Terminals and developer tools
-"brew-cask:httpie" = "latest"
+"brew-cask:httpie-desktop" = "latest"
 "brew-cask:warp" = "latest"
 "brew-cask:ghostty" = "latest"
 "brew-cask:cursor" = "latest"
 "brew-cask:docker-desktop" = "latest"
 "brew-cask:bruno" = "latest"
+"brew-cask:proxyman" = "latest"
+"brew-cask:xcodes-app" = "latest"
 
 # AI assistants
 "brew-cask:chatgpt" = "latest"
 "brew-cask:codex-app" = "latest"
 "brew-cask:claude" = "latest"
 "brew-cask:fluidvoice" = "latest"
+"brew-cask:ollama-app" = "latest"
+"brew-cask:steipete/tap/codexbar" = "latest"
 
 # Browsers
 "brew-cask:firefox" = "latest"
 "brew-cask:helium-browser" = "latest"
+"brew-cask:google-chrome" = "latest"
 
 # Notes and knowledge
 "brew-cask:obsidian" = "latest"

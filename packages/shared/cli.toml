@@ -60,7 +60,7 @@
 "brew:can1357/tap/omp" = "latest"
 "brew-cask:notion-cli" = { os = "macos" }
 "brew-cask:1password-cli" = { os = "macos" }
-"brew-cask:claude-code@latest" = { os = "macos", greedy = true }
+"brew-cask:claude-code" = { os = "macos", greedy = true }
 
 [tools]
 # Language runtimes and package managers
