@@ -35,7 +35,6 @@
 
 # AI assistants
 "brew-cask:chatgpt" = "latest"
-"brew-cask:codex-app" = "latest"
 "brew-cask:claude" = "latest"
 "brew-cask:fluidvoice" = "latest"
 "brew-cask:ollama-app" = "latest"
