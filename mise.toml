@@ -107,6 +107,11 @@ run = 'python scripts/setup.py remote-login-revoke --mise "{{ mise_bin }}"'
 raw = true
 
 [tasks.check]
-description = "Run the offline configuration, routing, and safety checks"
+description = "Run shell behaviour, configuration and safety checks"
 run = "python -B scripts/check.py"
+raw = true
+
+[tasks.check-shell]
+description = "Run isolated shell behaviour tests with Bats"
+run = "bats tests/shell"
 raw = true

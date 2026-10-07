@@ -161,15 +161,6 @@ for argv in (["dotfiles", "--skip-dotfiles"], ["install", "--keep-ssh", "--1pass
 
 
 # install.sh prompts and hand-off --------------------------------------------
-result = subprocess.run(["bash", str(root / "install.sh"), "invalid"], text=True, capture_output=True)
-assert result.returncode == 64 and "Usage:" in result.stderr, result.stdout + result.stderr
-print("PASS: bootstrap rejects an invalid profile before installing anything")
-for requested, inherited in (("personal", "work"), ("work", "personal"), ("--bootstrap-only", "invalid")):
-    result = subprocess.run(["bash", str(root / "install.sh"), requested], text=True, capture_output=True,
-                            env=dict(os.environ, DEVSETUP_PROFILE=inherited))
-    assert result.returncode == 64 and "DEVSETUP_PROFILE" in result.stderr, result.stdout + result.stderr
-print("PASS: conflicting and invalid environment profiles stop before bootstrap")
-
 with tempfile.TemporaryDirectory() as directory:
     fixture = Path(directory)
     installer = fixture / "install.sh"
@@ -246,12 +237,7 @@ esac''')
                             env=env, text=True, capture_output=True)
     assert result.returncode == 0
     assert setup_line(result.stdout) is None
-    for args in (["--keep-ssh", "--1password-ssh"], ["--dotfiles", "--skip-dotfiles"], ["work", "personal"],
-                 ["--skip", "unknown"], ["--skip", "preflight"],
-                 ["--skip", "dotfiles", "--dotfiles"], ["--skip", "ssh", "--1password-ssh"]):
-        result = subprocess.run(["bash", str(installer), *args], env=env, text=True, capture_output=True)
-        assert result.returncode == 64 and "os-bootstrap" not in result.stdout, result.stdout
-    for system, machine in (("Darwin", "x86_64"), ("Linux", "x86_64")):
+    for system, machine in (("Linux", "x86_64"),):
         result = subprocess.run(["bash", str(installer), "--keep-ssh"], text=True, capture_output=True,
                                 env=dict(env, TEST_SYSTEM=system, TEST_MACHINE=machine))
         assert result.returncode == 1 and "ARM64" in result.stderr and "os-bootstrap" not in result.stdout
@@ -544,34 +530,3 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         assert service.read_text() == "unchanged"
         print("PASS: interactive installation needs no Remote Login answer or prerequisites; "
               "the separate launcher checks prerequisites before changing access")
-
-with tempfile.TemporaryDirectory() as directory:
-    fixture = Path(directory)
-    binary = fixture / "bin"
-    binary.mkdir()
-    marker = fixture / "sudo-called"
-    command(binary, "sudo", 'touch "$TEST_SUDO_MARKER"; exit 99')
-    env = {**os.environ, "HOME": str(fixture), "TEST_SUDO_MARKER": str(marker),
-           "PATH": str(binary) + os.pathsep + os.environ["PATH"]}
-    env.pop("DEVSETUP_PROFILE", None)
-    result = subprocess.run(
-        ["bash", str(root / "scripts/with-sudo-askpass.sh"), sys.executable,
-         str(root / "scripts/setup.py"), "cli", "--check", "--mise", FAKE_MISE],
-        env=env, text=True, capture_output=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert not marker.exists(), "a read-only task requested sudo before parsing --check"
-    assert not (fixture / ".dev-setup-backups").exists()
-    print("PASS: the public --check command bypasses sudo and leaves the home unchanged")
-    refused = subprocess.run(
-        ["bash", str(root / "scripts/with-sudo-askpass.sh"), "/bin/sh", "-c", "exit 23"],
-        env=env, text=True, capture_output=True, start_new_session=True,
-    )
-    assert refused.returncode == 1 and "terminal" in refused.stderr
-    command(binary, "sudo", 'if [ "$*" = "-n true" ]; then exit 0; fi\nexit 1')
-    allowed = subprocess.run(
-        ["bash", str(root / "scripts/with-sudo-askpass.sh"), "/bin/sh", "-c", "exit 23"],
-        env=env, text=True, capture_output=True, start_new_session=True,
-    )
-    assert allowed.returncode == 23, allowed.stdout + allowed.stderr
-    print("PASS: headless sudo refuses unavailable authorisation, accepts NOPASSWD, and preserves command failure")

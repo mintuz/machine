@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -11,7 +12,12 @@ import tomllib
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     failures: list[str] = []
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    bats = shutil.which("bats")
+    if bats is None:
+        print("Shell checks require bats-core. Install it with: brew install bats-core", file=sys.stderr)
+        return 1
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+           "DEVSETUP_TEST_PYTHON": sys.executable}
     manifests = sorted(root.glob("*.toml")) + sorted((root / "packages").rglob("*.toml"))
     for path in manifests:
         try:
@@ -22,6 +28,7 @@ def main() -> int:
 
     scripts = sorted(root.glob("*.sh")) + sorted((root / "scripts").rglob("*.sh"))
     commands = [(str(path.relative_to(root)), ["/bin/bash", "-n", str(path)]) for path in scripts]
+    commands.append(("shell behaviours", [bats, str(root / "tests/shell")]))
     commands.extend(
         (name, [sys.executable, "-B", str(root / "scripts" / name)])
         for name in ("check-platforms.py", "check-software.py", "check-security.py")

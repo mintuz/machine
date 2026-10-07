@@ -30,6 +30,7 @@ contract.
 | `scripts/devsetup/global_gitignore` | Managed global Git ignore content |
 | `.ssh/` | Public SSH keys only; never private keys |
 | `scripts/check.py`, `scripts/check-*.py` | Non-installing configuration, host, software and security checks |
+| `tests/shell/` | Bats behaviour tests for shell entry points and sudo authorisation |
 
 ## Entry points and configuration
 
@@ -329,8 +330,18 @@ commands or ownership change. Do not add compatibility aliases for removed
 Make targets or Ansible tags.
 
 After code or inventory changes, run `mise run check`, or
-`python3 -B scripts/check.py` with Python 3.11 or newer. Checks use temporary
-directories and substitute commands. They cover the four OS/profile pairs,
+`python3 -B scripts/check.py` with Python 3.11 or newer and `bats` on PATH.
+Homebrew `bats-core` is required in both Mac profiles. On Ubuntu or before
+Mac CLI installation, install that test dependency explicitly. Missing
+Bats must fail the full check command, not silently omit shell coverage.
+Use `mise run check-shell` or `bats tests/shell` for the shell suite alone.
+Keep those tests focused on public outcomes: state preservation, refused
+operations, exit status and credential cleanup. Reuse the isolated sandbox
+and substitute privileged commands; do not assert source text, exact
+internal command sequences or copied argument echoes. Move overlapping
+shell cases out of the Python checks instead of maintaining duplicate tests.
+
+Checks use temporary directories and substitute commands. They cover the four OS/profile pairs,
 terminal prompts, opt-ins, configuration precedence, inventory errors,
 headless sudo, backups, revision safety, runtime/global-package migration and
 failure propagation. On macOS they also run real unprivileged `sshd -T` gates.

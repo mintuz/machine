@@ -142,7 +142,8 @@ bootstrap and do not prompt for feature choices.
 | `./remote-login.sh` | Check prerequisites, then enable key-only tailnet Remote Login from the local console |
 | `mise run remote-login-revoke` | Disable SSH startup/listener and back up then clear your authorised keys |
 | `mise run update` | Update installed packages, runtimes, global packages and models |
-| `mise run check` | Run non-installing syntax, configuration and safety checks |
+| `mise run check` | Run shell behaviour, syntax, configuration and safety checks |
+| `mise run check-shell` | Run only the Bats shell behaviour suite |
 
 GUI, App Store, preferences and Dock actions skip Ubuntu. Remote Login
 mutations are Mac-only and require their own explicit opt-in. Full setup
@@ -754,6 +755,35 @@ The bootstrap scripts install prerequisites; `scripts/setup.py` dispatches
 configuration and maintenance. `mise.toml` exposes that same dispatcher.
 The `devsetup` modules separate configuration, host settings, software and
 SSH security. Package selection reads the four additive TOML layers.
+
+Checks require [Bats (Bash Automated Testing System)](https://github.com/bats-core/bats-core)
+and Python 3.11 or newer. `bats-core` is included in both Mac profiles'
+required CLI inventory. On Ubuntu, or before Mac CLI installation, install
+the test dependency explicitly:
+
+```bash
+brew install bats-core
+```
+
+Run all checks, or just the shell suite:
+
+```bash
+mise run check
+mise run check-shell
+```
+
+Without mise, use `python3 -B scripts/check.py` for all checks or
+`bats tests/shell` for the shell suite. The full check command fails with
+an installation hint if Bats is missing; it never silently skips that suite.
+
+The Bats tests in `tests/shell/` exercise public script behaviour:
+input and platform refusals before bootstrap, bootstrap-only isolation,
+Remote Login launcher failures and configuration selection, sudo-free
+previews, headless authorisation, command exit status, and private
+credential-file cleanup. They use isolated homes and substituted privileged
+commands, not real package installation or service changes. Host-dependent
+integration cases skip unsupported hosts; the pure shell cases remain
+portable. Python tests retain configuration, domain and service-state coverage.
 
 `mise run check` does not install packages or change machine settings.
 It checks shell/Python syntax, TOML, all four OS/profile combinations,
