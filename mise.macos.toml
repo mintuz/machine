@@ -74,13 +74,14 @@ fi
 '''
 
 # The login shell. mise's own `chsh` runs as the user and asks for the account
-# password, so the hook sets it with sudo first; mise then verifies it and
-# reports drift. macOS accounts already default to zsh.
+# password, so the hook sets it with sudo first (vars.sudo in mise.toml);
+# mise then verifies it and reports drift. macOS accounts already default to
+# zsh.
 [bootstrap.user]
 login_shell = "/bin/zsh"
 
 [bootstrap.hooks.pre-user]
-run = '[ "$(dscl . -read "/Users/$(id -un)" UserShell | cut -d " " -f 2)" = /bin/zsh ] || sudo -n chsh -s /bin/zsh "$(id -un)"'
+run = '[ "$(dscl . -read "/Users/$(id -un)" UserShell | cut -d " " -f 2)" = /bin/zsh ] || {{ vars.sudo }} chsh -s /bin/zsh "$(id -un)"'
 
 # Shell startup block for Homebrew, mise and fzf. The block activates the
 # ~/.local/bin/mise link that bootstrap keeps, so it reads the same on every
@@ -96,7 +97,9 @@ run = '''
 
 # User preferences, typed. mise writes a value only when it is unset or
 # differs. Values that depend on the home directory are in the post-defaults
-# hook, because mise uses these values exactly as written.
+# hook, because mise uses these values exactly as written. So is
+# expose-animation-duration: `defaults write -float` stores a 32-bit float
+# and mise compares the 64-bit value, so 0.1 would never read back as equal.
 [bootstrap.macos.defaults."com.apple.finder"]
 ShowPathbar = true
 ShowStatusBar = true
@@ -130,7 +133,6 @@ show-process-indicators = true
 showhidden = true
 launchanim = false
 mineffect = "scale"
-expose-animation-duration = 0.1
 autohide = false
 autohide-delay = 0.0
 
@@ -147,17 +149,21 @@ DictionaryLookupEnabled = false
 [bootstrap.macos.defaults."com.apple.Terminal"]
 NewTabWorkingDirectoryBehavior = true
 
-# Home-relative preferences, Library visibility, the system-wide update check
-# (sudo, non-interactive: install.sh and the osx task run under the sudo
-# wrapper), then the Dock from vars.dock_tiles and the app restarts.
-# `--skip macos-defaults` skips this hook with the preferences.
+# Home-relative preferences, the Dock animation, Library visibility, the
+# system-wide update check (sudo through vars.sudo: install.sh and the osx
+# task run under the sudo wrapper), then the Dock from vars.dock_tiles and
+# the app restarts. `--skip macos-defaults` skips this hook with the
+# preferences.
 [bootstrap.hooks.post-defaults]
 run = '''
 defaults write com.apple.finder NewWindowTargetPath -string "file://$HOME"
 defaults write com.apple.screencapture location -string "$HOME/Desktop"
+if [ "$(defaults read com.apple.dock expose-animation-duration 2>/dev/null)" != 0.1 ]; then
+  defaults write com.apple.dock expose-animation-duration -float 0.1
+fi
 chflags nohidden "$HOME/Library"
 if [ "$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled 2>/dev/null)" != 1 ]; then
-  sudo -n defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true
+  {{ vars.sudo }} defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true
 fi
 killall Finder
 {%- if vars.dock_tiles | trim %}
@@ -165,7 +171,7 @@ if command -v dockutil >/dev/null 2>&1; then
   dockutil --remove all --no-restart
   {%- for item in vars.dock_tiles | trim | split(pat="\n") %}
   {%- if item == "spacer" %}
-  dockutil --add '' --type spacer --section apps --no-restart
+  dockutil --add '' --type spacer --section apps --no-restart || echo "Dock: could not add a spacer; continuing."
   {%- else %}
   dockutil --add {{ item | quote }} --no-restart || echo "Dock: could not add {{ item }}; continuing."
   {%- endif %}

@@ -79,7 +79,9 @@ The `ssh` environment is selected per run by consent, `--1password-ssh` or
 `mise run setup [personal|work]` invokes the installer. The other tasks
 source `scripts/task-env.sh`, which sets the environment for the run from
 `--profile`, `DEVSETUP_PROFILE`, then the `MISE_ENV` that mise passes to
-the task (the recorded profile or `-E` on `mise run`), then `personal`.
+the task (the recorded profile or `-E` on `mise run`), then `personal`. It
+also runs `brew shellenv` for the first Homebrew it finds, so the hooks do
+not depend on the caller's shell having Homebrew on PATH.
 They run `mise -E <env> bootstrap` for a set of parts and assume bootstrap
 is complete; they do not prompt for feature choices. `packages` previews
 with `--dry-run`; `install` applies every part; `cli` applies
@@ -100,15 +102,15 @@ sshd file and the Tailscale path. `config.py` loads it, then the
 gitignored `remote-login.local.toml` in the checkout when it exists; a key
 in the local file replaces the default. There is no other settings file
 and no `--config` option. Neither file may set detected values (`home`,
-`repo_dir`, `platform`, `user`, `profile`) or the per-run choices (`steps`,
-`revoke_remote_login`). Do not let local TOML files enable the private
+`repo_dir`, `platform`, `user`, `profile`) or the per-run choice
+(`revoke_remote_login`). Do not let local TOML files enable the private
 security command-injection seams used by tests: `config.py` refuses the
 test-only keys by name, and `check-security.py` injects them by calling
 `security.run` with a dictionary, never through a file. Preserve the
 documented `remote_login_sshd` list and `remote_login_launchctl`
 executable overrides, which the local file may set for isolated
-validation. The profile comes from the command line, `DEVSETUP_PROFILE` or
-the recorded mise profile, never from `remote-login.toml`.
+validation. The profile comes from the command line or `DEVSETUP_PROFILE`,
+never from `remote-login.toml`.
 
 `--skip` takes `mise bootstrap` part names, validated against the list in
 `mise bootstrap --help` and passed through unchanged; a part's hooks are
@@ -120,7 +122,9 @@ notice instead of running `brew bundle`; `Brewfile.cli` still installs.
 Other names are refused with the valid list. The old repository names map
 as: `cli` → `packages,tools`; `gui` → `gui`; `app-store` → `app-store`;
 `zsh` → `user`; `osx` → `macos-defaults`; `dotfiles` → `--skip-dotfiles`
-(`repos,task` without the prompt); `ssh` → `--keep-ssh`. `--skip dotfiles`
+(`repos,task` without the prompt); `ssh` → `--keep-ssh`. `--skip user` also
+skips Oh My Zsh and the plugin clone, as the old `zsh` step did;
+`--skip repos,task` keeps them. `--skip dotfiles`
 now means the mise `dotfiles` part (the managed files). Contradictory
 explicit flags fail. Bootstrap and the prerequisite check cannot be
 skipped. Revocation is a separate operation and must never be suppressed
@@ -130,8 +134,8 @@ The installer resolves consent before bootstrap: the SSH choice adds the
 `ssh` environment, the dotfiles choice adds `--skip repos,task`. The
 installer always leaves Remote Login alone; access setup is a later explicit
 operation. Full setup runs the mise phases in mise's order: Brewfile hooks,
-fzf, private directories, Oh My Zsh, repositories, managed files, Git
-settings, macOS preferences with the post-defaults hook, login shell, shell
+fzf, private directories, repositories, managed files, Git settings, macOS
+preferences with the post-defaults hook, Oh My Zsh, login shell, shell
 blocks, tools, the dotfiles installer task, the final hook. The Brewfile
 hooks set `HOMEBREW_NO_AUTO_UPDATE=1`; the installer's prerequisite
 bootstrap has its own refresh and there is no other. Run mise as the normal
@@ -216,14 +220,20 @@ line) goes in `~/.zshrc` on both platforms and `~/.bashrc` on Ubuntu; Ubuntu
 also gets the `dev-machine oh-my-zsh` block in `~/.zshrc` and the
 `dev-machine Node and pnpm` block in `~/.bashrc`. The fzf `post-packages`
 hook runs the formula's installer with `--no-update-rc` and skips with a
-notice when fzf is absent. The Oh My Zsh `pre-repos` hook runs the upstream
+notice when fzf is absent. The Oh My Zsh `pre-user` hook runs the upstream
 installer with `RUNZSH=no CHSH=no KEEP_ZSHRC=yes` only when `~/.oh-my-zsh`
 is missing, after creating an empty `~/.zshrc` if none exists so the
-installer never writes its template; the plugin is a `[bootstrap.repos]`
-entry. The login shell is declared in `[bootstrap.user]` per platform file,
-but mise's own `chsh` runs as the user and asks for the account password,
-which a key-only server account may lack; the `pre-user` hook therefore
-sets the shell with `sudo -n chsh` first and mise only verifies it.
+installer never writes its template; it then clones the plugin when its
+directory is missing, so a run that skips `repos` still gets it. The
+plugin is also a `[bootstrap.repos]` entry, which fast-forwards the same
+clone on later runs. The Ubuntu zsh block sources `oh-my-zsh.sh` only when
+the file exists. The login shell is declared in `[bootstrap.user]` per
+platform file, but mise's own `chsh` runs as the user and asks for the
+account password, which a key-only server account may lack; the `pre-user`
+hook therefore sets the shell with `{{ vars.sudo }} chsh` first and mise
+only verifies it. `vars.sudo` (in `mise.toml`) renders to `sudo -A` when
+the wrapper exported `SUDO_ASKPASS` and to `sudo -n` otherwise; use it for
+every sudo call in a hook.
 
 Git identity lives in `[vars]`; profiles change the primary managed GitHub
 key, not Git identity. The `post-dotfiles` hook applies the global Git
@@ -232,15 +242,18 @@ overwrites a changed target.
 
 Mac preferences are typed `[bootstrap.macos.defaults]` entries in
 `mise.macos.toml`; mise writes only unset or differing values and never
-deletes one. The two home-relative values, Library visibility, the
-system-wide update check (`sudo -n`, under the wrapper's authorisation),
-`killall Finder` and the Dock are the `post-defaults` hook. The Dock list is
-`vars.dock_tiles`, one absolute `.app` path or `spacer` per line, validated
-by `mise run check`; the hook removes every tile, adds each line with
-`dockutil`, reports and skips a missing app, and restarts the Dock. An empty
-list leaves the Dock unchanged. `--skip osx` skips the preferences and the
-hook together. Do not restore the removed automatic `LSQuarantine=false`
-preference.
+deletes one. The two home-relative values, the Dock
+`expose-animation-duration`, Library visibility, the system-wide update
+check (`vars.sudo`), `killall Finder` and the Dock are the `post-defaults`
+hook. `expose-animation-duration` is a hook line because `defaults write
+-float` stores a 32-bit float that never equals the 64-bit `0.1` mise
+compares, so a typed entry would be rewritten on every run. The Dock list
+is `vars.dock_tiles`, one absolute `.app` path or `spacer` per line,
+validated by `mise run check`; the hook removes every tile, adds each line
+with `dockutil`, reports and skips a missing app or spacer, and restarts
+the Dock. An empty list leaves the Dock unchanged. `--skip macos-defaults`
+skips the preferences and the hook together. Do not restore the removed
+automatic `LSQuarantine=false` preference.
 
 Reuse existing sudo authorisation, including NOPASSWD access when `sudo -v`
 requires a password under the account's verification policy. Prompt only when
@@ -444,8 +457,9 @@ internal command sequences or copied argument echoes. Move overlapping
 shell cases out of the Python checks instead of maintaining duplicate tests.
 
 Checks use temporary directories and substitute commands. Bats covers the
-installer's refusals, the profile record and precedence, the `--skip`
-translation and the `mise bootstrap` hand-off; the Remote Login launcher
+installer's refusals, the profile record, the `--skip` translation and the
+`mise bootstrap` hand-off; the task profile precedence in
+`scripts/task-env.sh`; the Remote Login launcher
 with the real `cli.py`, including the local settings file, the refused
 test-only keys and the prerequisite check before any service change; the
 shell block helper; headless sudo; and the updater. `check-security.py`

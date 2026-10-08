@@ -1,9 +1,9 @@
 # Settings for the Remote Login commands (`./remote-login.sh`,
 # `mise run remote-login*`), Mac only. Copy the keys you change into
 # remote-login.local.toml next to this file (Git ignores it); a key there
-# replaces the one here. The profile is never stored here: `--profile`,
-# DEVSETUP_PROFILE or the recorded mise profile choose it per run. Everything
-# else that setup applies is declared in the mise files.
+# replaces the one here. The profile is never stored here: `--profile` or
+# DEVSETUP_PROFILE choose it per run. Everything else that setup applies is
+# declared in the mise files.
 
 # Phone public key files in .ssh/, one key line each. Enablement needs at
 # least one; list them in remote-login.local.toml.

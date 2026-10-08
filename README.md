@@ -98,12 +98,13 @@ operations too. Explicit `--dotfiles` and `--skip-dotfiles` work on both OSes.
 
 After the prerequisites, full setup is one `mise bootstrap` run from the
 checkout. In order it installs the selected Brewfiles and the fzf
-integration, creates `~/.ssh` and `~/.gnupg`, installs Oh My Zsh, clones or
-updates `~/.dotfiles` and the zsh-autosuggestions plugin, writes the managed
-files (tools link, global Git ignore file and, when chosen, the SSH client
+integration, creates `~/.ssh` and `~/.gnupg`, clones or updates
+`~/.dotfiles` and the zsh-autosuggestions plugin, writes the managed files
+(tools link, global Git ignore file and, when chosen, the SSH client
 files), applies the Git settings and on macOS the preferences and Dock,
-sets the login shell, adds the shell startup blocks, installs the mise
-tools and runs the dotfiles installer. Mac-only parts do not run on Ubuntu.
+installs Oh My Zsh, sets the login shell, adds the shell startup blocks,
+installs the mise tools and runs the dotfiles installer. Mac-only parts do
+not run on Ubuntu.
 
 The installer **never enables Remote Login**. Set up
 [remote access](#remote-access-from-an-iphone) separately. Installing
@@ -262,7 +263,8 @@ spacer
 Dock order. The hook removes every tile, adds each line with `dockutil`,
 reports and skips an app that is not installed, and restarts the Dock. An
 empty list leaves the Dock unchanged. `mise run check` validates the list.
-Skip `osx` to omit the preferences, the hook and the Dock together.
+Use `--skip macos-defaults` to omit the preferences, the hook and the Dock
+together.
 
 ## Choose what to install
 
@@ -291,9 +293,9 @@ The earlier repository names map onto the new options as follows:
 | `cli` | `--skip packages,tools` | Every Brewfile, the fzf integration and every mise tool. |
 | `gui` | `--skip gui` | `Brewfile.gui` in every layer; CLI and App Store files still install. |
 | `app-store` | `--skip app-store` | `Brewfile.app-store`; CLI and GUI files still install. |
-| `zsh` | `--skip user` | The login shell and the shell startup blocks. Oh My Zsh and its plugin still install. |
+| `zsh` | `--skip user` | The login shell, the shell startup blocks, Oh My Zsh and its plugin. |
 | `osx` | `--skip macos-defaults` | The preferences, Library visibility, the update check and the Dock. |
-| `dotfiles` | `--skip-dotfiles` | The `~/.dotfiles` checkout, its installer and the zsh-autosuggestions clone, without the Ubuntu prompt. `--skip repos,task` skips the same parts but keeps the prompt. |
+| `dotfiles` | `--skip-dotfiles` | The `~/.dotfiles` checkout and its installer, without the Ubuntu prompt. `--skip repos,task` skips the same parts but keeps the prompt. Oh My Zsh and its plugin still install. |
 | `ssh` | `--keep-ssh` | Leaves the `ssh` environment out, like answering No. |
 
 `--skip dotfiles` now means the mise `dotfiles` part: the managed files

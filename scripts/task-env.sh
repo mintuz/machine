@@ -1,8 +1,9 @@
 # Sourced by the mise tasks (sh). Sets mise_env, the environment for one
-# `mise bootstrap` run. The task's --profile (usage_profile) and
-# DEVSETUP_PROFILE must agree; either wins for the run. Otherwise the
-# environment mise already selected applies: the profile install.sh recorded
-# in miserc.local.toml, or -E on `mise run`. Personal is the last resort.
+# `mise bootstrap` run, and puts Homebrew on PATH for the hooks. The task's
+# --profile (usage_profile) and DEVSETUP_PROFILE must agree; either wins for
+# the run. Otherwise the environment mise already selected applies: the
+# profile install.sh recorded in miserc.local.toml, or -E on `mise run`.
+# Personal is the last resort.
 profile="${usage_profile:-}"
 for candidate in "$profile" "${DEVSETUP_PROFILE:-}"; do
   case "$candidate" in
@@ -16,3 +17,10 @@ if [ -n "$profile" ] && [ -n "${DEVSETUP_PROFILE:-}" ] && [ "$profile" != "$DEVS
 fi
 # shellcheck disable=SC2034  # read by the task that sources this file
 mise_env="${profile:-${DEVSETUP_PROFILE:-${MISE_ENV:-personal}}}"
+# The caller's shell may lack Homebrew (the external dotfiles own ~/.zshrc).
+for brew in /opt/homebrew/bin/brew /home/linuxbrew/.linuxbrew/bin/brew; do
+  if [ -x "$brew" ]; then
+    eval "$("$brew" shellenv sh)"
+    break
+  fi
+done

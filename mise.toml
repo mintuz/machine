@@ -30,7 +30,8 @@ mode = "0700"
 # The external dotfiles and the Oh My Zsh plugin. mise clones a missing
 # checkout, fast-forwards a clean one to the ref and refuses a dirty
 # worktree, a different origin or a non-Git directory. The Oh My Zsh
-# pre-repos hook runs first so the plugin lands inside its custom directory.
+# pre-user hook clones the plugin itself when `--skip repos` leaves this
+# phase out; mise accepts that clone on later runs.
 [bootstrap.repos]
 "~/.dotfiles" = { url = "https://github.com/mintuz/.dotfiles.git", ref = "master" }
 "~/.oh-my-zsh/custom/plugins/zsh-autosuggestions" = { url = "https://github.com/zsh-users/zsh-autosuggestions.git", ref = "master" }
@@ -48,6 +49,9 @@ issues = "{{ xdg_state_home }}/dev-machine-setup/bootstrap-issues"
 git_name = "Adam Bulmer"
 git_email = "github@mintuz.com"
 shell_block = "{{ config_root }}/scripts/shell-block.sh"
+# Hooks escalate with the password helper the sudo wrapper exported, or
+# without a prompt when the wrapper found no password was needed.
+sudo = 'sudo $([ -n "${SUDO_ASKPASS:-}" ] && printf %s -A || printf %s -n)'
 
 [bootstrap.hooks.pre-packages]
 run = [
@@ -55,11 +59,13 @@ run = [
   '{{ vars.brew_bundle }}="{{ config_root }}/packages/shared/Brewfile.cli"',
 ]
 
-# Oh My Zsh before the repos phase clones its plugin. The upstream installer
-# runs only when the directory is missing; the flags keep it from changing
-# the login shell, replacing ~/.zshrc (an empty file counts, so one is
-# created first) or starting a shell.
-[bootstrap.hooks.pre-repos]
+# Oh My Zsh and its plugin before the login shell is set, so the zsh block
+# the post-user hooks write never sources a missing file, whatever
+# `--skip` leaves out. The upstream installer runs only when the directory
+# is missing; the flags keep it from changing the login shell, replacing
+# ~/.zshrc (an empty file counts, so one is created first) or starting a
+# shell. The plugin clone covers a run that skips the repos phase.
+[bootstrap.hooks.pre-user]
 run = '''
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
   [ -e "$HOME/.zshrc" ] || touch "$HOME/.zshrc"
@@ -69,6 +75,8 @@ if [ ! -d "$HOME/.oh-my-zsh" ]; then
     --output "$installer" https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh
   RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh "$installer"
 fi
+plugin="$HOME/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
+[ -d "$plugin" ] || git clone https://github.com/zsh-users/zsh-autosuggestions.git "$plugin"
 '''
 
 # Git identity and defaults after the global ignore file is in place. Every
