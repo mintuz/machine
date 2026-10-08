@@ -14,4 +14,5 @@ if [ -n "$profile" ] && [ -n "${DEVSETUP_PROFILE:-}" ] && [ "$profile" != "$DEVS
   echo "--profile $profile conflicts with DEVSETUP_PROFILE=$DEVSETUP_PROFILE." >&2
   exit 64
 fi
+# shellcheck disable=SC2034  # read by the task that sources this file
 mise_env="${profile:-${DEVSETUP_PROFILE:-${MISE_ENV:-personal}}}"

@@ -97,6 +97,7 @@ case "$(uname -s)" in
   Darwin) platform=macos ;;
   Linux)
     ID=""
+    # shellcheck source=/dev/null
     source "$os_release"
     if [[ "$ID" != ubuntu ]]; then
       echo "Only Ubuntu is supported on Linux." >&2
@@ -163,6 +164,7 @@ fi
 
 # OS prerequisites, Homebrew (on PATH for the bootstrap hooks), then the
 # checksummed mise release and the locked Python. bootstrap-mise.sh sets mise_bin.
+# shellcheck source=/dev/null
 source "$repo_dir/scripts/bootstrap-$platform.sh"
 source "$repo_dir/scripts/bootstrap-homebrew.sh"
 source "$repo_dir/scripts/bootstrap-mise.sh"
