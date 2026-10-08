@@ -15,7 +15,7 @@ brew "bats-core"
 # Xcode project management
 cask "tuist", greedy: true
 
-# AI and app CLIs. Linux installs these through packages/linux/tools.*.toml.
+# AI and app CLIs. Linux installs these through mise/conf.d/tools.toml.
 cask "codex"
 cask "notion-cli"
 cask "1password-cli"

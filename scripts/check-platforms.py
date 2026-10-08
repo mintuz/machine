@@ -5,7 +5,6 @@ Everything runs in temporary directories with substitute commands: no sudo,
 network, package installs, or changes to this machine.
 """
 import contextlib
-import io
 import json
 import os
 from pathlib import Path
@@ -80,7 +79,6 @@ with tempfile.TemporaryDirectory() as directory:
             socket = ("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
                       if platform == "mac" else ".1password/agent.sock")
             assert config["ssh_agent_socket"] == f"{real_home}/{socket}", config["ssh_agent_socket"]
-            assert config["pnpm_home"] == f"{real_home}/" + ("Library/pnpm" if platform == "mac" else ".local/share/pnpm")
             assert config["shell_path"] == ("/bin/zsh" if platform == "mac" else "/usr/bin/zsh")
             assert config["brew_prefix"] == ("/opt/homebrew" if platform == "mac" else "/home/linuxbrew/.linuxbrew")
             assert ("tailscale_cli" in config) == ("remote_login_sshd_file" in config) == (platform == "mac")
@@ -112,10 +110,10 @@ with tempfile.TemporaryDirectory() as directory:
     override = fixture / "local.toml"
     override.write_text('git_name = "Override Name"\nremote_login_sshd = ["/fake/sshd", "-f", "x"]\n'
                         'custom_note = "kept"\n'
-                        '[linux]\npnpm_home = "~/custom-pnpm"\n[mac]\ntailscale_cli = "/fake/tailscale"\n')
+                        '[linux]\nbrew_prefix = "~/custom-brew"\n[mac]\ntailscale_cli = "/fake/tailscale"\n')
     merged = load("Linux", "aarch64", override=override)
     assert merged["git_name"] == "Override Name" and merged["custom_note"] == "kept"
-    assert merged["pnpm_home"] == f"{real_home}/custom-pnpm" and "tailscale_cli" not in merged
+    assert merged["brew_prefix"] == f"{real_home}/custom-brew" and "tailscale_cli" not in merged
     assert merged["remote_login_sshd"] == ["/fake/sshd", "-f", "x"]
     assert load(override=override)["tailscale_cli"] == "/fake/tailscale"
     for text, message in (("git_name = [", "Invalid TOML"), ('remote_login_sources = "100.64.0.0/10"', "list"),
@@ -128,11 +126,11 @@ with tempfile.TemporaryDirectory() as directory:
         override.write_text(text + "\n")
         expect_error(message, load, "Linux", "aarch64", override=override)
     expect_error("Cannot read settings file", load, override=fixture / "missing.toml")
-    override.write_text('[steps]\napp-store = true\ndock = false\n[mac.steps]\ndock = true\nosx = false\n')
-    selected = load(override=override, flags={"app-store": False})
+    override.write_text('[steps]\nfzf = true\ndock = false\n[mac.steps]\ndock = true\nosx = false\n')
+    selected = load(override=override, flags={"fzf": False})
     assert selected["steps"]["dock"] and not selected["steps"]["osx"]
-    assert not selected["steps"]["app-store"], "explicit skip must win over the override file"
-    assert load(override=override)["steps"]["app-store"]
+    assert not selected["steps"]["fzf"], "explicit skip must win over the override file"
+    assert load(override=override)["steps"]["fzf"]
     override.write_text('[mac]\nmacos_preferences = [["domain", "key"]]\n')
     expect_error("domain, key and value", load, override=override)
     override.write_text('[mac]\ndock_items = [["relative.app"]]\n')
@@ -144,8 +142,8 @@ with tempfile.TemporaryDirectory() as directory:
 # Contradictory explicit choices must fail rather than silently turn into no-ops.
 for argv in (["dotfiles", "--skip-dotfiles"], ["install", "--keep-ssh", "--1password-ssh"],
              ["install", "--profile", "staging"], ["make"], ["install", "--skip", "preflight"],
-             ["install", "--skip", "ssh", "--1password-ssh"], ["app-store", "--skip", "app-store"],
-             ["node", "--skip", "dotfiles"], ["node", "--revoke-remote-login"],
+             ["install", "--skip", "ssh", "--1password-ssh"], ["fzf", "--skip", "fzf"],
+             ["fzf", "--skip", "dotfiles"], ["fzf", "--revoke-remote-login"],
              ["install", "--skip"]):
     with open(os.devnull, "w") as quiet, contextlib.redirect_stderr(quiet):
         try:
@@ -154,38 +152,6 @@ for argv in (["dotfiles", "--skip-dotfiles"], ["install", "--keep-ssh", "--1pass
             assert exit_status.code == 2
         else:
             raise AssertionError(f"{argv} was accepted")
-
-
-# Non-fatal step problems let later steps run, then appear in one final list,
-# also when a later step stops setup.
-class _Steps:
-    def __init__(self, problems, fatal=None):
-        self.calls, self.problems, self.fatal = [], problems, fatal
-
-    def __getattr__(self, module):
-        def run(action, config, check=False):
-            self.calls.append(action)
-            if action == self.fatal:
-                raise RuntimeError(f"{action} stopped")
-            return self.problems.get(action)
-        return type("Module", (), {"run": staticmethod(run)})
-
-
-steps_config = {"platform": "mac", "revoke_remote_login": False,
-                "steps": {name: name != "remote-login" for name in config_module.STEPS}}
-for fatal in (None, "node"):
-    modules = _Steps({"gui": ["GUI app bad: advice"], "app-store": ["App Store app 1: advice"]}, fatal)
-    output = io.StringIO()
-    with contextlib.redirect_stdout(output):
-        if fatal:
-            expect_error("node stopped", cli.dispatch, "install", steps_config, modules)
-        else:
-            assert cli.dispatch("install", steps_config, modules) == [
-                "GUI app bad: advice", "App Store app 1: advice"]
-    assert ("dock" in modules.calls) == (fatal is None), modules.calls
-    summary = output.getvalue().split("These items need attention:")[-1]
-    assert "GUI app bad: advice" in summary and "App Store app 1: advice" in summary, output.getvalue()
-print("PASS: non-fatal step problems let later steps run and are listed at the end, also after a fatal error")
 
 
 # install.sh prompts and hand-off --------------------------------------------
@@ -203,9 +169,10 @@ with tempfile.TemporaryDirectory() as directory:
     (fixture / "scripts/bootstrap-ubuntu.sh").write_text('echo "os-bootstrap:ubuntu"\n')
     (fixture / "scripts/bootstrap-homebrew.sh").write_text(":\n")
     (fixture / "scripts/bootstrap-mise.sh").write_text(
-        'mise_bin=/fake/mise\npython_bin="$repo_dir/bin/python"\n')
+        'mise_bin="$repo_dir/bin/mise"\npython_bin="$repo_dir/bin/python"\n')
     (fixture / "bin").mkdir()
     command(fixture / "bin", "python", 'shift; echo "python: $*"')
+    command(fixture / "bin", "mise", 'echo "mise: $*"')
     command(fixture / "scripts", "with-sudo-askpass.sh", 'echo "wrapper: $*"')
     command(fixture / "bin", "uname", '''case "$1" in
   -m) printf '%s\\n' "${TEST_MACHINE:-arm64}" ;;
@@ -247,6 +214,7 @@ esac''')
             stdout, stderr = process.communicate(timeout=15)
             assert process.returncode == 0, stdout + stderr
             assert ("os-bootstrap:macos" if system == "Darwin" else "os-bootstrap:ubuntu") in stdout, stdout
+            assert "mise: -E work bootstrap --yes" in stdout, stdout
             if system == "Linux" and answer is not None:
                 assert "[Y/n]" in stderr, stderr
             if answer is not None:
@@ -259,7 +227,7 @@ esac''')
     result = subprocess.run(["bash", str(installer), "--bootstrap-only", "--1password-ssh"],
                             env=env, text=True, capture_output=True)
     assert result.returncode == 0
-    assert setup_line(result.stdout) is None
+    assert setup_line(result.stdout) is None and "bootstrap --yes" not in result.stdout
     shutil.copy(root / "new-mac.sh", fixture / "new-mac.sh")
     result = subprocess.run(["bash", str(fixture / "new-mac.sh"), "--keep-ssh"],
                             env=env, text=True, capture_output=True)

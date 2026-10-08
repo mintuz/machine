@@ -96,10 +96,10 @@ This does not prevent selected components from configuring regular shell
 files. Use [component exclusions](#choose-what-to-install) to control those
 operations too. Explicit `--dotfiles` and `--skip-dotfiles` work on both OSes.
 
-Full setup checks prerequisites and refreshes Homebrew before applying
-selected components. It then configures SSH, Git, command-line tools, GUI
-apps, Zsh, App Store apps, macOS preferences, Node, dotfiles and the Dock.
-Mac-only actions do not run on Ubuntu.
+Full setup installs the selected Brewfiles, links the tools file and
+installs the mise tools with `mise bootstrap`. It then checks prerequisites
+and refreshes Homebrew before configuring SSH, Git, fzf, Zsh, macOS
+preferences, dotfiles and the Dock. Mac-only actions do not run on Ubuntu.
 
 The installer **never enables Remote Login**, even if a configuration file
 requests it. Set up [remote access](#remote-access-from-an-iphone) separately.
@@ -129,12 +129,10 @@ defaults, supplied configuration files and explicit flags.
 |---|---|
 | `mise run setup personal` | Run the installer, including bootstrap and consent prompts. |
 | `mise run bootstrap-only` | Run bootstrap without full setup. |
-| `mise run packages --profile work` | Show selected packages without installing them. |
-| `mise run install --profile work` | Run full setup without bootstrap or feature prompts. |
-| `mise run cli` | Install native command-line tools, every mise tool and fzf integration. |
-| `mise run node` | Add the `PNPM_HOME` shell block on Ubuntu. |
-| `mise run gui` | Install or upgrade Mac desktop apps. |
-| `mise run app-store` | Install Mac App Store apps; requires sign-in. |
+| `mise run packages --profile work` | Show the selected Brewfiles, tools link and mise tools without installing them. |
+| `mise run install --profile work` | Run the host steps without bootstrap, packages, tools or feature prompts. |
+| `mise run cli --profile work` | Install every selected Brewfile (CLI, GUI and App Store), link the tools file and install every mise tool. |
+| `mise run fzf` | Install fzf key bindings and completion. |
 | `mise run git` | Install Git and apply global Git settings. |
 | `mise run zsh` | Set the login shell and install Oh My Zsh. |
 | `mise run dotfiles` | Install or refresh the configured external dotfiles. |
@@ -152,7 +150,8 @@ Use `--profile personal|work` with component tasks. The installer uses a
 positional profile instead. For task-specific help:
 
 ```bash
-mise run cli -- --help
+mise run cli --help
+mise run fzf -- --help
 ```
 
 To inspect both selections and preview supported installation actions:
@@ -178,8 +177,7 @@ before any enablement.
 ### Create local settings
 
 Create a TOML file outside the checkout. Replace the sample identity with
-your own. This example also omits external dotfiles and the Mac App Store
-and Dock steps:
+your own. This example also omits external dotfiles and the Mac Dock step:
 
 ```toml
 # ~/.config/dev-machine-setup.toml
@@ -189,15 +187,8 @@ git_email = "you@example.com"
 [steps]
 dotfiles = false
 
-[mac]
-pnpm_home = "~/Library/pnpm"
-
 [mac.steps]
-app-store = false
 dock = false
-
-[linux]
-pnpm_home = "~/.local/share/pnpm"
 ```
 
 Configuration files are not discovered automatically. Pass one file on
@@ -239,10 +230,9 @@ from another profile. Set `git_name` and `git_email` explicitly.
 ### Adjust preferences and paths
 
 Use the keys in [defaults.toml](defaults.toml) to configure SSH public-key
-filenames, the agent socket, the dotfiles repository and revision, pnpm
-paths and global packages. Keep platform-specific paths under `[mac]` or
-`[linux]`. Bootstrap uses `/opt/homebrew` on macOS and
-`/home/linuxbrew/.linuxbrew` on Ubuntu.
+filenames, the agent socket, and the dotfiles repository and revision. Keep
+platform-specific paths under `[mac]` or `[linux]`. Bootstrap uses
+`/opt/homebrew` on macOS and `/home/linuxbrew/.linuxbrew` on Ubuntu.
 
 On macOS, `macos_preferences` contains the arguments after `defaults write`.
 `{home}` expands to your home directory. `dock_items` contains argument
@@ -269,16 +259,25 @@ Use repeated `--skip` options to omit components for one full setup run:
 ./install.sh personal --skip app-store --skip dock
 ```
 
-Supported steps are `ssh`, `git`, `cli`, `remote-login`, `gui`, `zsh`,
-`app-store`, `osx`, `node`, `dotfiles` and `dock`. All default to enabled
-except `ssh` and `remote-login`. Save recurring exclusions in `[steps]`,
-`[mac.steps]` or `[linux.steps]` in your local configuration file.
+Supported names are `ssh`, `git`, `cli`, `remote-login`, `gui`, `zsh`,
+`app-store`, `fzf`, `osx`, `dotfiles` and `dock`. All default to enabled
+except `ssh` and `remote-login`. Packages and mise tools are `mise
+bootstrap` parts, so the installer maps three names onto them: `--skip cli`
+becomes `mise bootstrap --skip packages,tools` and also skips `fzf`;
+`--skip gui` and `--skip app-store` both become `--skip packages`, which
+skips every Brewfile, including `Brewfile.cli`. A GUI-only or App
+Store-only exclusion is not available in this release; remove the lines
+from the Brewfile instead. Save recurring exclusions for the host steps
+(`ssh`, `git`, `fzf`, `remote-login`, `zsh`, `osx`, `dotfiles`, `dock`) in
+`[steps]`, `[mac.steps]` or `[linux.steps]` in your local configuration
+file; packages and tools cannot be excluded from a file.
 
 A direct component command explicitly opts in for that run. For example,
-this installs App Store apps even if your file excludes them from full setup:
+this installs the fzf integration even if your file excludes it from full
+setup:
 
 ```bash
-mise run app-store --config "$HOME/.config/dev-machine-setup.toml"
+mise run fzf --config "$HOME/.config/dev-machine-setup.toml"
 ```
 
 The command reports the override. Contradictory explicit flags fail.
@@ -291,11 +290,10 @@ native prerequisites. For example, skipping Git configuration does not
 exclude the Git executable needed for dotfiles. Homebrew dependencies and
 the external dotfiles installer can have their own effects.
 
-The `cli` step installs every mise tool, including Node, pnpm and the
-`npm:` providers, and adds fzf. The `node` step only adds the Ubuntu
-`PNPM_HOME` shell block, so `--skip node` does not exclude Node.
-Tailscale is a Mac GUI package, not an App Store package. Its sign-in and
-required macOS extension approval remain manual.
+`mise run cli` installs every selected Brewfile and every mise tool,
+including Node, pnpm and the `npm:` providers; the `fzf` step adds the fzf
+shell integration. Tailscale is a Mac GUI package, not an App Store
+package. Its sign-in and required macOS extension approval remain manual.
 
 ## Configure SSH with 1Password
 
@@ -375,35 +373,22 @@ exec zsh -l
 ### Understand shell and runtime settings
 
 The tools this repository installs with mise are declared in
-`mise/conf.d/tools.toml`. The `cli` step links that file to
-`~/.config/mise/conf.d/dev-machine-setup.toml` with `mise dot apply`, so
-the tools are active in every directory. Compatible dotfiles use an adjacent
-`dotfiles.toml` file. mise refuses to replace an existing regular file at
-the link target and leaves your other mise files alone. The link always
-goes to `~/.config/mise/conf.d`; a custom `MISE_CONFIG_DIR` or
-`XDG_CONFIG_HOME` is not followed. If an earlier version of this repository
-wrote a regular `dev-machine-setup.toml` there, remove that file once before
-running setup again.
+`mise/conf.d/tools.toml`. `mise bootstrap` links that file to
+`~/.config/mise/conf.d/dev-machine-setup.toml`, so the tools are active in
+every directory. Compatible dotfiles use an adjacent `dotfiles.toml` file.
+mise refuses to replace an existing regular file at the link target and
+leaves your other mise files alone. The link always goes to
+`~/.config/mise/conf.d`; a custom `MISE_CONFIG_DIR` or `XDG_CONFIG_HOME` is
+not followed. If an earlier version of this repository wrote a regular
+`dev-machine-setup.toml` there, remove that file once before running setup
+again.
 
 Compatible dotfiles should support project `.node-version` files and
-preserve a custom `PNPM_HOME`. When dotfiles are disabled, bootstrap
-configures Homebrew and mise in regular shell files. Selected components
-add their own shell integration. Setup does not edit symlinked shell files
-owned by another repository; those files must activate mise and source
-fzf themselves.
-
-### Add the pnpm shell block on Ubuntu
-
-Run the `node` task to add the `PNPM_HOME` block independently:
-
-```bash
-mise run node --profile personal --config "$HOME/.config/dev-machine-setup.toml"
-```
-
-On Ubuntu it adds a `PNPM_HOME` block to `.bashrc` and `.zshrc` that points
-at the configured `pnpm_home`. On macOS it does nothing; your dotfiles set
-`PNPM_HOME` there. Node, pnpm and npm-backed tools are installed by the
-`cli` step with the other mise tools.
+export `PNPM_HOME`; setup no longer adds a shell block for it. When
+dotfiles are disabled, bootstrap configures Homebrew and mise in regular
+shell files. Selected components add their own shell integration. Setup
+does not edit symlinked shell files owned by another repository; those
+files must activate mise and source fzf themselves.
 
 ## Update installed software
 
@@ -431,20 +416,24 @@ failure if any component failed. Resolve the reported cause, then rerun.
 
 ## Customise the package inventory
 
-Each run combines four additive layers in order:
+Brewfiles live in four additive layers:
 
 1. `packages/shared/`
 2. `packages/shared/<personal|work>/`
-3. `packages/<mac|linux>/`
-4. `packages/<mac|linux>/<personal|work>/`
+3. `packages/mac/`
+4. `packages/mac/<personal|work>/`
 
 Each layer can contain `Brewfile.cli`, `Brewfile.gui` and
 `Brewfile.app-store`. Every file is optional; create only the layers you
-need.
+need. There is no Linux layer: Ubuntu installs `packages/shared/` only.
 
 Brewfiles use plain [Homebrew Bundle](https://docs.brew.sh/Brew-Bundle-and-Brewfile)
-syntax. Setup concatenates the selected files of one kind in layer order and
-passes them to `brew bundle install`. Keep casks in `packages/mac/`:
+syntax. `mise bootstrap` runs `brew bundle install --file=<layer file>`
+once per selected file from the `[bootstrap.hooks.pre-packages]` entries
+in `mise.toml` (shared layers), `mise.macos.toml` (the `mac` layer) and
+`mise.personal.toml` or `mise.work.toml` (profile layers). mise runs those
+files in that order. A new layer file needs a hook line in the matching
+mise file. Keep casks in `packages/mac/`:
 
 ```ruby
 # packages/shared/Brewfile.cli
@@ -460,12 +449,19 @@ cask "claude-code", greedy: true
 mas "Things", id: 904280696
 ```
 
+```toml
+# mise.macos.toml
+[bootstrap.hooks.pre-packages]
+run = [
+  '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.cli"',
+]
+```
+
 mise tools are declared once, in `mise/conf.d/tools.toml`, with an `os`
-list on entries for one platform. The `cli` step installs them with
-`mise install` after linking the file into your global mise configuration.
-Give a CLI cask a Linux provider with `os = ["linux"]` where one exists.
-A tool for one profile only belongs in `mise.personal.toml` or
-`mise.work.toml`:
+list on entries for one platform. `mise bootstrap` links the file into your
+global mise configuration and installs them with `mise install`. Give a CLI
+cask a Linux provider with `os = ["linux"]` where one exists. A tool for
+one profile only belongs in `mise.personal.toml` or `mise.work.toml`:
 
 ```toml
 # mise/conf.d/tools.toml
@@ -481,12 +477,16 @@ mise run packages --profile personal
 mise run packages --profile work
 ```
 
-CLI failures stop setup. GUI and App Store failures do not stop the later
-steps; setup lists them at the end and returns failure. `brew bundle`
-adopts apps that are already in `/Applications`, upgrades outdated items
-and leaves self-updating apps alone unless the item says `greedy: true`.
-App Store installation needs sign-in and the Mac app's ID. Removing an
-entry does not uninstall an existing package.
+This prints every hook command, the tools link and the tools that
+`mise install` would add, without running them.
+
+`Brewfile.cli` failures stop setup. GUI and App Store failures do not stop
+it: the hook records the failure, bootstrap continues, and the final hook
+lists the failures and returns failure. `brew bundle` adopts apps that are
+already in `/Applications`, upgrades outdated items and leaves
+self-updating apps alone unless the item says `greedy: true`. App Store
+installation needs sign-in and the Mac app's ID. Removing an entry does not
+uninstall an existing package.
 
 ### Review package trust
 
@@ -895,8 +895,9 @@ shell suite.
 | A local setting is ignored | Pass its file with `--config` on every relevant command. Check its platform tables. |
 | Dotfiles update refused | Save local work, resolve divergent history, or correct the configured repository. Do not discard work to bypass the check. |
 | Shell still runs old hooks | Start a fresh login shell with `exec zsh -l`. Sourcing `.zshrc` does not remove previously registered hooks. |
-| mise tool installation failed | Correct the reported mise error, then rerun `mise run cli` with the same configuration. If the link target already exists as a regular file, remove it first. |
-| Package or App Store installation failed | Read the reported step output, for example sign in to the App Store or review a Homebrew error. Then retry the affected component. |
+| mise tool installation failed | Correct the reported mise error, then rerun `mise run cli` with the same profile. If the link target already exists as a regular file, remove it first. |
+| CLI package installation failed | `mise bootstrap` stops. Read the Homebrew output, fix the cause, then rerun `mise run cli`. A package that an inventory replaced, such as the disabled `tldr` formula or the `claude-code@latest` cask, must be removed by hand with `brew uninstall`. |
+| GUI or App Store installation failed | Setup continues and lists the failures at the end from `~/.local/state/dev-machine-setup/bootstrap-issues`. Sign in to the App Store or fix the Homebrew error, then rerun `mise run cli`; `brew bundle` skips what is already installed. |
 | Remote Login refuses a session or fails its checks | Use a fresh local Mac terminal and follow the remote access guide. Never bypass a failed run by enabling SSH manually. |
 
 Repository maintenance guidance is in [AGENTS.md](AGENTS.md).

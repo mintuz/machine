@@ -31,7 +31,7 @@ def main() -> int:
     commands.append(("shell behaviours", [bats, str(root / "tests/shell")]))
     commands.extend(
         (name, [sys.executable, "-B", str(root / "scripts" / name)])
-        for name in ("check-platforms.py", "check-software.py", "check-security.py")
+        for name in ("check-platforms.py", "check-security.py")
     )
     for name, command in commands:
         print(f"\nChecking {name}", flush=True)

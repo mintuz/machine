@@ -15,25 +15,20 @@ from pathlib import Path
 from devsetup import config as config_module
 
 REPO_DIR = Path(__file__).resolve().parents[2]
-MAC_ONLY = ("gui", "app-store", "osx", "dock")
-SOFTWARE = ("packages", "gui", "app-store", "node")
-HOST = ("git", "zsh", "osx", "dock", "dotfiles")
+MAC_ONLY = ("osx", "dock")
+HOST = ("git", "zsh", "fzf", "osx", "dock", "dotfiles")
 SECURITY = ("ssh", "remote-login-check", "remote-login", "remote-login-revoke")
 # Actions that check git, curl, and disk space first, as the old setup playbook did.
-PREFLIGHT = ("install", "cli", "gui", "app-store", "osx", "dock", "dotfiles", "git", "zsh", "node", "ssh")
+PREFLIGHT = ("install", "fzf", "osx", "dock", "dotfiles", "git", "zsh", "ssh")
 ACTIONS = {
-    "install": "Configure everything for the profile (no bootstrap or prompts)",
+    "install": "Configure the host for the profile (no bootstrap, packages, tools or prompts)",
     "bootstrap": "Post-mise first-run steps used by install.sh",
-    "packages": "Preview the selected package inventories without changes",
-    "cli": "Install native CLI tools, every mise tool and fzf integration",
-    "gui": "Install or upgrade Mac desktop apps",
-    "app-store": "Install Mac App Store apps",
+    "fzf": "Install fzf key bindings and completion",
     "osx": "Apply macOS preferences",
     "dock": "Lay out the macOS Dock",
     "dotfiles": "Install or refresh the external dotfiles",
     "git": "Install Git and apply global Git settings",
     "zsh": "Set the login shell and install oh-my-zsh",
-    "node": "Add the Ubuntu PNPM_HOME shell block",
     "ssh": "Back up and configure SSH for the 1Password agent",
     "remote-login-check": "Check Remote Login prerequisites without changes",
     "remote-login": "Enable key-only tailnet Remote Login on this Mac",
@@ -48,44 +43,26 @@ class _Modules:
         return importlib.import_module(f"devsetup.{name}")
 
 
-def dispatch(action: str, config: dict, modules, *, check: bool = False) -> list[str]:
-    """Run one action. ``modules`` provides host, software, and security objects.
-
-    Return the non-fatal problems from all steps. They are also listed at the
-    end of the output, including when a later step stops with an error.
-    """
-    issues: list[str] = []
-
+def dispatch(action: str, config: dict, modules, *, check: bool = False) -> None:
+    """Run one action. ``modules`` provides the host and security objects."""
     def step(module: str, name: str) -> None:
-        issues.extend(getattr(modules, module).run(name, config, check=check) or [])
+        getattr(modules, module).run(name, config, check=check)
 
     if action in MAC_ONLY and config["platform"] != "mac":
         print(f"{action}: skipped; it applies to macOS only.")
-        return issues
-    try:
-        if action in PREFLIGHT:
-            step("host", "preflight")
-        if action == "install":
-            _install(config, step)
-        elif action == "bootstrap":
-            step("host", "bootstrap")
-        elif action == "cli":
-            step("software", "cli")
-            step("host", "fzf")
-        elif action in SOFTWARE:
-            step("software", action)
-        elif action in HOST:
-            step("host", action)
-        elif action in SECURITY:
-            step("security", action)
-        else:
-            raise ValueError(f"Unknown action {action!r}")
-    finally:
-        if issues:
-            print("\nThese items need attention:", flush=True)
-            for issue in issues:
-                print(f"  - {issue}", flush=True)
-    return issues
+        return
+    if action in PREFLIGHT:
+        step("host", "preflight")
+    if action == "install":
+        _install(config, step)
+    elif action == "bootstrap":
+        step("host", "bootstrap")
+    elif action in HOST:
+        step("host", action)
+    elif action in SECURITY:
+        step("security", action)
+    else:
+        raise ValueError(f"Unknown action {action!r}")
 
 
 def _install(config: dict, step) -> None:
@@ -103,23 +80,16 @@ def _install(config: dict, step) -> None:
         step("security", "ssh")
     if enabled("git"):
         step("host", "git")
-    if enabled("cli"):
-        step("software", "cli")
+    if enabled("fzf"):
         step("host", "fzf")
     if config["platform"] == "mac" and config["revoke_remote_login"]:
         step("security", "remote-login-revoke")
     elif enabled("remote-login"):
         step("security", "remote-login")
-    if enabled("gui"):
-        step("software", "gui")
     if enabled("zsh"):
         step("host", "zsh")
-    if enabled("app-store"):
-        step("software", "app-store")
     if enabled("osx"):
         step("host", "osx")
-    if enabled("node"):
-        step("software", "node")
     if enabled("dotfiles"):
         step("host", "dotfiles")
     if enabled("dock"):
@@ -195,10 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["PATH"] = os.pathsep.join([f"{prefix}/bin", f"{prefix}/sbin", os.environ.get("PATH", "")])
         mode = " (check mode: no changes)" if args.check else ""
         print(f"{args.action}: {config['platform']} / {config['profile']}{mode}")
-        issues = dispatch(args.action, config, _Modules(), check=args.check)
-        if issues:
-            count = "1 item needs" if len(issues) == 1 else f"{len(issues)} items need"
-            raise RuntimeError(f"{args.action} finished, but {count} attention. See the list above.")
+        dispatch(args.action, config, _Modules(), check=args.check)
     except RuntimeError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

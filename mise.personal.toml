@@ -1,0 +1,8 @@
+# Loaded with -E personal. The packages/mac/personal layer applies on macOS
+# only; on Linux each command renders as a no-op comment. No shared/personal
+# or work-only Brewfile exists, so there is no mise.work.toml.
+[bootstrap.hooks.pre-packages]
+run = [
+  '{% if os() == "macos" %}{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/personal/Brewfile.cli"{% else %}: packages/mac/personal/Brewfile.cli applies on macOS only{% endif %}',
+  '{% if os() == "macos" %}{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/personal/Brewfile.gui" || echo "Personal GUI apps: Homebrew did not install or upgrade every app. Read its output above, then run mise run cli again." >> "{{ vars.issues }}"{% else %}: packages/mac/personal/Brewfile.gui applies on macOS only{% endif %}',
+]

@@ -11,6 +11,7 @@ use_1password=""
 install_dotfiles=""
 config_args=()
 skip_args=()
+mise_skip=""
 skip_names=""
 has_config=false
 dotfiles_explicit=false
@@ -45,11 +46,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip)
       [[ $# -ge 2 ]] || usage
+      # Packages and tools are mise bootstrap parts; the other names are Python steps.
       case "$2" in
-        ssh|git|cli|remote-login|gui|zsh|app-store|osx|node|dotfiles|dock) ;;
+        cli) mise_skip="$mise_skip,packages,tools"; skip_args+=(--skip fzf) ;;
+        gui|app-store) mise_skip="$mise_skip,packages" ;;
+        ssh|git|fzf|remote-login|zsh|osx|dotfiles|dock) skip_args+=(--skip "$2") ;;
         *) echo "Unknown or mandatory step: $2" >&2; usage ;;
       esac
-      skip_args+=(--skip "$2")
       skip_names="$skip_names $2"
       shift
       ;;
@@ -161,6 +164,10 @@ common_args+=(${config_args[@]+"${config_args[@]}"})
 "$python_bin" "$repo_dir/scripts/setup.py" bootstrap "${common_args[@]}" ${skip_args[@]+"${skip_args[@]}"}
 
 if [[ "$profile" != --bootstrap-only ]]; then
+  # Brewfiles, the global tools link and mise tools, from the mise configuration.
+  mise_args=(--yes)
+  if [[ -n "$mise_skip" ]]; then mise_args+=(--skip "${mise_skip#,}"); fi
+  "$mise_bin" -E "$bootstrap_profile" bootstrap "${mise_args[@]}"
   dotfiles_args=()
   if [[ "$dotfiles_explicit" == true ]]; then
     if [[ "$install_dotfiles" == true ]]; then dotfiles_args=(--dotfiles); else dotfiles_args=(--skip-dotfiles); fi

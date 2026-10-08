@@ -1,9 +1,9 @@
 # CLI formulae shared by macOS, Ubuntu and both profiles. Failures stop setup.
 #
-# Plain Homebrew Bundle syntax. Setup concatenates the selected Brewfile.cli
-# files in layer order (shared, shared/<profile>, <platform>, <platform>/<profile>)
-# and pipes them to `brew bundle install`. Casks are macOS-only; keep them in
-# packages/mac/ and declare a Linux provider in packages/linux/tools.*.toml.
+# Plain Homebrew Bundle syntax. `mise bootstrap` runs `brew bundle install`
+# once per layer file from the hooks in mise.toml, mise.macos.toml and
+# mise.<profile>.toml. Casks are macOS-only; keep them in packages/mac/ and
+# declare a Linux provider in mise/conf.d/tools.toml with os = ["linux"].
 # A third-party formula needs its `tap` line and `trusted: true` on the item;
 # never trust a whole tap.
 

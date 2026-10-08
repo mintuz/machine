@@ -32,7 +32,7 @@ PY
 
 @test "public check runs without requesting sudo or creating backups" {
   run run_headless bash "$TEST_REPO/scripts/with-sudo-askpass.sh" \
-    "$TEST_PYTHON" "$TEST_REPO/scripts/setup.py" cli --check --mise /opt/fake/bin/mise
+    "$TEST_PYTHON" "$TEST_REPO/scripts/setup.py" fzf --check --mise /opt/fake/bin/mise
   [ "$status" -eq 0 ]
   [ ! -e "$TEST_ROOT/sudo-attempted" ]
   [ ! -e "$HOME/.dev-setup-backups" ]

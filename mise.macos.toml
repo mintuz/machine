@@ -1,0 +1,11 @@
+# Loaded on macOS by auto_env (.miserc.toml). The packages/mac layer: its
+# Brewfile.cli failure stops bootstrap; its GUI and App Store failures are
+# recorded for the final hook in mise.toml. mas finds installed apps through
+# Spotlight, so /Applications is indexed before the App Store bundle.
+[bootstrap.hooks.pre-packages]
+run = [
+  '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.cli"',
+  '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.gui" || echo "GUI apps: Homebrew did not install or upgrade every app. Read its output above, then run mise run cli again." >> "{{ vars.issues }}"',
+  'mdimport /Applications',
+  '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.app-store" || echo "App Store apps: mas did not install every app. Make sure that you are signed in to the App Store and that each ID is for a Mac app that is still for sale, then run mise run cli again." >> "{{ vars.issues }}"',
+]

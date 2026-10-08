@@ -17,15 +17,14 @@ from typing import Mapping
 PROFILES = ("personal", "work")
 DEFAULT_PROFILE = "personal"
 PLATFORMS = ("mac", "linux")
-STEPS = ("ssh", "git", "cli", "remote-login", "gui", "zsh", "app-store",
-         "osx", "node", "dotfiles", "dock")
+STEPS = ("ssh", "git", "fzf", "remote-login", "zsh", "osx", "dotfiles", "dock")
 PER_RUN_FLAGS = (*STEPS, "revoke_remote_login")
 STRING_KEYS = ("git_email", "git_name", "dotfiles_repo", "dotfiles_version",
                "personal_public_ssh_key", "work_public_ssh_key", "shell_path",
-               "ssh_agent_socket", "pnpm_home", "brew_prefix")
+               "ssh_agent_socket", "brew_prefix")
 LIST_KEYS = ("dotfiles_conflict_paths", "remote_login_public_keys", "remote_login_sources")
 MAC_PATH_KEYS = ("remote_login_sshd_file", "tailscale_cli")
-PATH_KEYS = ("shell_path", "pnpm_home", "brew_prefix", "brew") + MAC_PATH_KEYS
+PATH_KEYS = ("shell_path", "brew_prefix", "brew") + MAC_PATH_KEYS
 # Detected per run; a settings file cannot replace them.
 DETECTED_KEYS = ("home", "repo_dir", "platform", "user", "mise")
 # These substitutions belong to isolated direct module tests, not user settings.

@@ -24,20 +24,16 @@ revoke_remote_login = false
 [steps]
 ssh = false
 git = true
-cli = true
+fzf = true
 remote-login = false
-gui = true
 zsh = true
-app-store = true
 osx = true
-node = true
 dotfiles = true
 dock = true
 
 [mac]
 shell_path = "/bin/zsh"
 ssh_agent_socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-pnpm_home = "~/Library/pnpm"
 brew_prefix = "/opt/homebrew"
 remote_login_sshd_file = "/etc/ssh/sshd_config.d/010-remote-login.conf"
 tailscale_cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
@@ -126,5 +122,4 @@ shell_path = "/usr/bin/zsh"
 # A forwarded SSH_AUTH_SOCK replaces this with the literal "SSH_AUTH_SOCK" so the
 # session-specific socket path is never saved.
 ssh_agent_socket = "~/.1password/agent.sock"
-pnpm_home = "~/.local/share/pnpm"
 brew_prefix = "/home/linuxbrew/.linuxbrew"

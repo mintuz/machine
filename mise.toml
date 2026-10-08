@@ -15,11 +15,38 @@ task.run_auto_install = false
 python = "3.14.8"
 
 # One symlink makes mise/conf.d/tools.toml part of the global mise
-# configuration, next to the dotfiles repository's dotfiles.toml. `mise run cli`
-# applies this entry with `mise dot apply`; mise refuses to replace an existing
+# configuration, next to the dotfiles repository's dotfiles.toml. The dotfiles
+# phase of `mise bootstrap` applies it; mise refuses to replace an existing
 # regular file at the target.
 [dotfiles]
 "~/.config/mise/conf.d/dev-machine-setup.toml" = { source = "mise/conf.d/tools.toml", mode = "symlink" }
+
+# Homebrew Bundle installs the layer Brewfiles from `pre-packages` hooks, one
+# `brew bundle install` per file. mise appends hooks in config load order:
+# mise.toml (shared), mise.macos.toml (mac, loaded by auto_env), then
+# mise.<profile>.toml (profile, loaded with -E). A Brewfile.cli failure stops
+# bootstrap. Brewfile.gui and Brewfile.app-store failures append one line to
+# the issues file; the final hook prints the lines and fails.
+[vars]
+brew_bundle = "HOMEBREW_NO_AUTO_UPDATE=1 brew bundle install --file"
+state_dir = "{{ xdg_state_home }}/dev-machine-setup"
+issues = "{{ xdg_state_home }}/dev-machine-setup/bootstrap-issues"
+
+[bootstrap.hooks.pre-packages]
+run = [
+  'mkdir -p "{{ vars.state_dir }}" && rm -f "{{ vars.issues }}"',
+  '{{ vars.brew_bundle }}="{{ config_root }}/packages/shared/Brewfile.cli"',
+]
+
+[bootstrap.hooks.final]
+run = '''
+if [ -s "{{ vars.issues }}" ]; then
+  echo "These items need attention:"
+  sed 's/^/  - /' "{{ vars.issues }}"
+  rm -f "{{ vars.issues }}"
+  exit 1
+fi
+'''
 
 # Pass options after the task name, for example `mise run cli --profile work`.
 # `setup` and `bootstrap-only` accept the install.sh arguments.
@@ -40,23 +67,20 @@ run = 'scripts/with-sudo-askpass.sh python scripts/setup.py install --mise "{{ m
 raw = true
 
 [tasks.packages]
-description = "Preview the selected package inventories without changes"
-run = 'python scripts/setup.py packages --mise "{{ mise_bin }}"'
+description = "Preview the selected Brewfiles, tools link and mise tools without changes"
+usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --dry-run'
 raw = true
 
 [tasks.cli]
-description = "Install native CLI tools, every mise tool and fzf shell integration"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py cli --mise "{{ mise_bin }}"'
+description = "Install every selected Brewfile (CLI, GUI and App Store), the tools link and every mise tool"
+usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only packages,dotfiles,tools,final-hook --yes'
 raw = true
 
-[tasks.gui]
-description = "Install or upgrade Mac desktop apps"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py gui --mise "{{ mise_bin }}"'
-raw = true
-
-[tasks.app-store]
-description = "Install Mac App Store apps"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py app-store --mise "{{ mise_bin }}"'
+[tasks.fzf]
+description = "Install fzf key bindings and completion"
+run = 'python scripts/setup.py fzf --mise "{{ mise_bin }}"'
 raw = true
 
 [tasks.osx]
@@ -82,11 +106,6 @@ raw = true
 [tasks.zsh]
 description = "Set the login shell and install oh-my-zsh"
 run = 'scripts/with-sudo-askpass.sh python scripts/setup.py zsh --mise "{{ mise_bin }}"'
-raw = true
-
-[tasks.node]
-description = "Add the Ubuntu PNPM_HOME shell block"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py node --mise "{{ mise_bin }}"'
 raw = true
 
 [tasks.update]

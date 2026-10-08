@@ -1,10 +1,11 @@
 # Repository guidance
 
 This repository configures ARM64 macOS and headless Ubuntu development
-machines. Both support personal and work profiles. Mise owns runtimes and the
-command interface. Homebrew owns native formulae and casks. Python standard-
-library helpers own configuration and privileged operations. Make and
-Ansible are no longer provisioning engines. Do not add a parallel legacy path.
+machines. Both support personal and work profiles. Mise owns runtimes, the
+command interface and, through `mise bootstrap`, package installation.
+Homebrew owns native formulae and casks. Python standard-library helpers own
+host configuration and privileged operations. Make and Ansible are no longer
+provisioning engines. Do not add a parallel legacy path.
 
 This is the shared maintenance guide for Codex and Claude Code. `CLAUDE.md`
 imports this file; keep project instructions here to avoid divergent copies.
@@ -18,20 +19,20 @@ contract.
 | --- | --- |
 | `install.sh`, `scripts/bootstrap-*.sh` | Consent prompts, ARM/OS validation and bootstrap prerequisites |
 | `remote-login.sh` | Explicit post-install Remote Login entry point using mise's configured Python |
-| `mise.toml`, `mise.lock`, `.miserc.toml` | Public tasks, the locked helper Python, the global tools link and early mise settings |
+| `mise.toml`, `mise.lock`, `.miserc.toml` | Public tasks, the locked helper Python, the global tools link, the shared Brewfile hooks and early mise settings |
+| `mise.macos.toml`, `mise.personal.toml` | Brewfile hooks for the `packages/mac` and `packages/mac/personal` layers |
 | `mise/conf.d/tools.toml` | Every mise tool for both platforms and profiles, selected with `os` |
 | `scripts/with-sudo-askpass.sh` | Sudo authorisation, password helper and cleanup |
-| `scripts/setup.py`, `scripts/devsetup/cli.py` | Direct CLI and setup ordering |
+| `scripts/setup.py`, `scripts/devsetup/cli.py` | Direct CLI and host setup ordering |
 | `scripts/devsetup/config.py`, `defaults.toml` | Configuration, OS/profile validation and per-platform defaults |
 | `packages/` | Literal Homebrew Bundle files per layer; no installation logic |
-| `scripts/devsetup/software.py` | `brew bundle` installation and the mise tool step |
-| `scripts/devsetup/host.py` | Prerequisites, Git, shell, external dotfiles, macOS preferences and Dock |
+| `scripts/devsetup/host.py` | Prerequisites, Git, shell, fzf, external dotfiles, macOS preferences and Dock |
 | `scripts/update.sh` | Shell maintenance of installed Homebrew, mise, npm/pnpm, App Store and Ollama software |
 | `scripts/devsetup/security.py` | Managed SSH client configuration and Remote Login |
 | `templates/` | Managed SSH client/server templates |
 | `scripts/devsetup/global_gitignore` | Managed global Git ignore content |
 | `.ssh/` | Public SSH keys only; never private keys |
-| `scripts/check.py`, `scripts/check-*.py` | Non-installing configuration, host, software and security checks |
+| `scripts/check.py`, `scripts/check-*.py` | Non-installing configuration, host and security checks |
 | `tests/shell/` | Bats behaviour tests for shell entry points and sudo authorisation |
 
 ## Entry points and configuration
@@ -41,15 +42,22 @@ contract.
 before bootstrap. Reject Intel, Rosetta, non-Ubuntu Linux and root. Bootstrap
 helpers are sourced, not independent entry points. Keep OS prerequisites,
 Homebrew installation and the checksummed mise/locked Python installation in
-that order. Do not introduce an Ansible or pip bootstrap dependency.
+that order. After the Python bootstrap step, a full run calls
+`mise -E <profile> bootstrap --yes` from the checkout for the Brewfiles, the
+tools link and the mise tools, then the Python `install` aggregate for the
+host steps. Do not introduce an Ansible or pip bootstrap dependency.
 `new-mac.sh` remains the Mac bootstrap-only wrapper.
 
-`mise run setup personal|work` invokes the installer. Other tasks dispatch to
-`scripts/setup.py` and assume bootstrap is complete. They do not prompt for
-feature choices. Use `--profile personal|work` or `DEVSETUP_PROFILE`; default
-to personal on each invocation and reject conflicting selections. The
-installer uses a positional profile and must reject an environment conflict
-before any installation. Pass the effective profile to its bootstrap helper.
+`mise run setup personal|work` invokes the installer. `mise run packages` and
+`mise run cli` run `mise -E <profile> bootstrap` (`--dry-run`, or
+`--only packages,dotfiles,tools,final-hook --yes`); they take
+`--profile personal|work` through a usage flag or `DEVSETUP_PROFILE`. The
+other tasks dispatch to `scripts/setup.py` and assume bootstrap is complete.
+They do not prompt for feature choices. Use `--profile personal|work` or
+`DEVSETUP_PROFILE`; default to personal on each invocation and reject
+conflicting selections. The installer uses a positional profile and must
+reject an environment conflict before any installation. Pass the effective
+profile to its bootstrap helper and to `mise bootstrap`.
 
 Load `defaults.toml`, then the single optional `--config` file. Apply the
 selected `[mac]` or `[linux]` table within each file after its shared keys.
@@ -61,14 +69,18 @@ Preserve the documented `remote_login_sshd` list and
 `remote_login_launchctl` executable overrides for isolated validation.
 The profile comes only from the command line or `DEVSETUP_PROFILE`, never
 from a settings file. The canonical `[steps]` table contains `ssh`, `git`,
-`cli`, `remote-login`, `gui`, `zsh`, `app-store`, `osx`, `node`, `dotfiles`
-and `dock`. Merge it by key, not whole-table replacement. Other lists
-replace earlier values. The old root feature keys are removed, not aliases.
-Repeatable `--skip STEP` overrides the selected policy for aggregate
-installation only. Direct component commands opt in explicitly and report
-when they override a saved exclusion; contradictory explicit flags fail.
-Bootstrap and preflight cannot be skipped. Revocation is a separate
-operation and must never be suppressed by a step exclusion.
+`fzf`, `remote-login`, `zsh`, `osx`, `dotfiles` and `dock`; packages and
+tools are mise bootstrap parts, not steps. Merge it by key, not whole-table
+replacement. Other lists replace earlier values. The old root feature keys
+are removed, not aliases. Repeatable `--skip STEP` overrides the selected
+policy for aggregate installation only. The installer maps `--skip cli` to
+`mise bootstrap --skip packages,tools` plus `--skip fzf`, and `--skip gui`
+or `--skip app-store` to `--skip packages`, which also skips the CLI
+Brewfiles; it forwards the step names to Python. Direct component commands
+opt in explicitly and report when they override a saved exclusion;
+contradictory explicit flags fail. Bootstrap and preflight cannot be
+skipped. Revocation is a separate operation and must never be suppressed by
+a step exclusion.
 
 The installer forwards the same `--config` file and component choices to
 Python, resolving the relative path from the original invocation
@@ -81,21 +93,23 @@ Remote Login enablement for its run; access setup is a later explicit
 operation. Pass dotfiles and profile overrides only for explicit choices;
 otherwise let Python resolve the configured values and defaults.
 
+Full setup runs `mise bootstrap` (Brewfiles, tools link, mise tools), then
+validates prerequisites and refreshes Homebrew before managed SSH, Git, fzf,
+Remote Login, Zsh, macOS preferences, dotfiles and Dock. Filter this fixed
+order by the typed step policy. Preserve each OS and security guard. A
+failed prerequisite or Homebrew refresh must stop before SSH or host writes.
+Host preflight owns the one setup/component refresh; the Brewfile hooks set
+`HOMEBREW_NO_AUTO_UPDATE=1` and must not repeat it. The installer's
+prerequisite bootstrap has its own refresh. Run Python as the normal user;
+escalate individual operations with sudo.
 
-Full setup validates prerequisites and refreshes Homebrew before managed SSH,
-Git, CLI/fzf, Remote Login, GUI, Zsh, App Store, macOS preferences, Node,
-dotfiles and Dock. Filter this fixed order by the typed step policy.
-Preserve each OS and security guard. A failed prerequisite or Homebrew
-refresh must stop before SSH or host writes. Host preflight owns the one
-setup/component refresh; CLI and GUI helpers must not repeat it. The
-installer's prerequisite bootstrap has its own refresh. Run Python as the
-normal user; escalate individual operations with sudo.
-
-`mise run packages --profile personal|work` is read-only. Root task settings
-must prevent automatic runtime installation during previews and checks.
-`--check` bypasses the sudo wrapper. It reports only supported previews;
-several host actions deliberately say they are not previewed. Never describe
-it as a complete configuration or SSH deployment preview.
+`mise run packages --profile personal|work` is read-only: it runs
+`mise -E <profile> bootstrap --dry-run`, which prints the hook commands and
+the tools that would be installed. Root task settings must prevent
+automatic runtime installation during previews and checks. `--check`
+bypasses the sudo wrapper. It reports only supported previews; several host
+actions deliberately say they are not previewed. Never describe it as a
+complete configuration or SSH deployment preview.
 
 ## Consent and independent repositories
 
@@ -165,14 +179,22 @@ command, propagate its exit status and remove temporary credential files.
 
 ## Package and runtime ownership
 
-Combine `shared/`, `shared/<profile>/`, `<mac|linux>/` and
-`<mac|linux>/<profile>/` in that order. Each layer may contain
+Brewfiles live in `packages/shared/`, `packages/shared/<profile>/`,
+`packages/mac/` and `packages/mac/<profile>/`. Each layer may contain
 `Brewfile.cli`, `Brewfile.gui` and `Brewfile.app-store`; every file is
-optional. Brewfiles use plain Homebrew Bundle syntax. Setup concatenates the
-selected files of one kind in layer order and pipes them to
-`brew bundle install --file=-` with `HOMEBREW_NO_AUTO_UPDATE=1`. Create a
-layer only when it contains packages. Profiles are additive, not uninstall
-lists.
+optional, and there is no Linux layer. Brewfiles use plain Homebrew Bundle
+syntax. `mise bootstrap` installs them from `[bootstrap.hooks.pre-packages]`
+entries, one `brew bundle install --file=<layer file>` with
+`HOMEBREW_NO_AUTO_UPDATE=1` per file: shared layers in `mise.toml`, the
+`mac` layer in `mise.macos.toml` (loaded on macOS by `auto_env`) and
+profile layers in `mise.<profile>.toml` (loaded with `-E <profile>`). mise
+appends hooks in that load order, so files apply as shared, mac, then the
+profile layers; each file is self-contained and `brew bundle` is idempotent,
+so the order does not change the result. A hook for a Mac-only layer in a
+profile file renders as a no-op comment on Linux through
+`{% if os() == "macos" %}`. Add a hook line when you add a layer file;
+create a layer only when it contains packages. Profiles are additive, not
+uninstall lists.
 
 mise tools are declared once, in `mise/conf.d/tools.toml`. Give a
 platform-specific entry `os = ["linux"]` or `os = ["macos"]`; put a tool
@@ -199,25 +221,24 @@ whole tap or disable Homebrew's trust policy. Preview commands must not
 modify the trust store. Maintenance must not grant blanket trust to
 installed taps or restore revoked permissions implicitly.
 
-The `cli` step owns `Brewfile.cli`, every mise tool and fzf. After the
-bundle it runs `mise -E <profile> dot apply --yes` for the tools link, then
-`mise -E <profile> install` from the checkout; a bundle, link or
-`mise install` failure stops setup. `gui` owns `Brewfile.gui` and
-`app-store` owns `Brewfile.app-store`; both are Mac-only, and `app-store`
-runs `mdimport /Applications` first so mas can see installed apps. Their
-failures let later steps continue: return one issue string from the step;
-the dispatcher lists the issues at the end, also after a fatal error, and
-returns failure. Never repair Homebrew state or delete backups
-automatically. Mac App Store installation requires sign-in. Remove disabled
-`tldr` before installing its replacement `tlrc`. Remove the conflicting
-`claude-code@latest` cask before installing its replacement `claude-code`
-cask.
+`Brewfile.cli` hooks are fatal: a failure stops bootstrap before the tools
+link and `mise install`. `Brewfile.gui` and `Brewfile.app-store` hooks are
+Mac-only; the App Store hook runs `mdimport /Applications` first so mas can
+see installed apps. Their failures let bootstrap continue: the hook appends
+one line to `$XDG_STATE_HOME/dev-machine-setup/bootstrap-issues` (default
+`~/.local/state/...`), and `[bootstrap.hooks.final]` in `mise.toml` prints
+the lines, deletes the file and returns failure. The first shared hook
+deletes a stale file. Never repair Homebrew state or delete backups
+automatically. Mac App Store installation requires sign-in. A package that
+an inventory replaced, such as the disabled `tldr` formula or the
+`claude-code@latest` cask, must be removed by hand; setup no longer
+uninstalls anything.
 
-The `node` step owns the `PNPM_HOME` shell block that it adds on Ubuntu
-through `host.ensure_block`; it runs no commands and does nothing on macOS.
-Node, pnpm and the `npm:` providers are ordinary entries in
-`mise/conf.d/tools.toml`, installed by the `cli` step; `--skip node` does
-not exclude them. Native prerequisites of selected components remain
+The `fzf` host step owns the fzf key bindings and completion and needs the
+`fzf` formula from `Brewfile.cli`. Node, pnpm and the `npm:` providers are
+ordinary entries in `mise/conf.d/tools.toml`, installed by the `tools`
+part. The external dotfiles export `PNPM_HOME`; setup no longer adds a
+shell block for it. Native prerequisites of selected components remain
 allowed; exclusions are not an uninstall/package-denial policy. Ensure child
 tools can find the configured mise executable, even with an absolute
 `--mise` path and a minimal `PATH`.
@@ -322,9 +343,10 @@ and incident steps remain manual.
 
 ## Making and validating changes
 
-Add software to the layer Brewfiles and `tools.*.toml` files, not Python
-package lists. Put behaviour in the responsible domain module and keep the
-CLI dispatcher explicit. Keep Mac-only commands behind platform guards.
+Add software to the layer Brewfiles and `mise/conf.d/tools.toml`, not
+Python package lists; a new layer file also needs its hook line. Put
+behaviour in the responsible domain module and keep the CLI dispatcher
+explicit. Keep Mac-only commands behind platform guards.
 Update this guide and README when
 commands or ownership change. Do not add compatibility aliases for removed
 Make targets or Ansible tags.
@@ -349,7 +371,8 @@ unprivileged `sshd -T` gates.
 Stateful service substitutes cover stop-before-write, rollback, offline final-
 key revocation and partial activation failures without changing host services.
 Inspect real selection with `mise run packages --profile personal` and
-`mise run packages --profile work`. ShellCheck can check the Bash entry points.
+`mise run packages --profile work`, or `mise -E <profile> config` for the
+loaded files. ShellCheck can check the Bash entry points.
 
 Use disposable machines or containers for real bootstrap/install/update and
 shell checks. Do not provision the development host to validate a change.
