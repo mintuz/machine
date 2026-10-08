@@ -99,10 +99,10 @@ operations too. Explicit `--dotfiles` and `--skip-dotfiles` work on both OSes.
 After the prerequisites, full setup is one `mise bootstrap` run from the
 checkout. In order it installs the selected Brewfiles and the fzf
 integration, creates `~/.ssh` and `~/.gnupg`, clones or updates
-`~/.dotfiles` and the zsh-autosuggestions plugin, writes the managed files
+`~/.dotfiles`, writes the managed files
 (tools link, global Git ignore file and, when chosen, the SSH client
 files), applies the Git settings and on macOS the preferences and Dock,
-installs Oh My Zsh, sets the login shell, adds the shell startup blocks,
+installs Oh My Zsh and its plugin, sets the login shell, adds the shell startup blocks,
 installs the mise tools and runs the dotfiles installer. Mac-only parts do
 not run on Ubuntu.
 

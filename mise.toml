@@ -27,14 +27,13 @@ mode = "0700"
 [bootstrap.directories."~/.gnupg"]
 mode = "0700"
 
-# The external dotfiles and the Oh My Zsh plugin. mise clones a missing
-# checkout, fast-forwards a clean one to the ref and refuses a dirty
-# worktree, a different origin or a non-Git directory. The Oh My Zsh
-# pre-user hook clones the plugin itself when `--skip repos` leaves this
-# phase out; mise accepts that clone on later runs.
+# The external dotfiles. mise clones a missing checkout, fast-forwards a
+# clean one to the ref and refuses a dirty worktree, a different origin or
+# a non-Git directory. The Oh My Zsh plugin is not listed here: the repos
+# phase runs before the pre-user hook that installs Oh My Zsh, and the
+# upstream installer refuses an existing ~/.oh-my-zsh.
 [bootstrap.repos]
 "~/.dotfiles" = { url = "https://github.com/mintuz/.dotfiles.git", ref = "master" }
-"~/.oh-my-zsh/custom/plugins/zsh-autosuggestions" = { url = "https://github.com/zsh-users/zsh-autosuggestions.git", ref = "master" }
 
 # Homebrew Bundle installs the layer Brewfiles from `pre-packages` hooks, one
 # `brew bundle install` per file. mise appends hooks in config load order:
@@ -64,7 +63,7 @@ run = [
 # `--skip` leaves out. The upstream installer runs only when the directory
 # is missing; the flags keep it from changing the login shell, replacing
 # ~/.zshrc (an empty file counts, so one is created first) or starting a
-# shell. The plugin clone covers a run that skips the repos phase.
+# shell. The plugin is cloned once and fast-forwarded on later runs.
 [bootstrap.hooks.pre-user]
 run = '''
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
@@ -76,7 +75,11 @@ if [ ! -d "$HOME/.oh-my-zsh" ]; then
   RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh "$installer"
 fi
 plugin="$HOME/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
-[ -d "$plugin" ] || git clone https://github.com/zsh-users/zsh-autosuggestions.git "$plugin"
+if [ -d "$plugin" ]; then
+  git -C "$plugin" pull --ff-only --quiet
+else
+  git clone --quiet https://github.com/zsh-users/zsh-autosuggestions.git "$plugin"
+fi
 '''
 
 # Git identity and defaults after the global ignore file is in place. Every

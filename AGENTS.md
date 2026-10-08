@@ -223,11 +223,12 @@ hook runs the formula's installer with `--no-update-rc` and skips with a
 notice when fzf is absent. The Oh My Zsh `pre-user` hook runs the upstream
 installer with `RUNZSH=no CHSH=no KEEP_ZSHRC=yes` only when `~/.oh-my-zsh`
 is missing, after creating an empty `~/.zshrc` if none exists so the
-installer never writes its template; it then clones the plugin when its
-directory is missing, so a run that skips `repos` still gets it. The
-plugin is also a `[bootstrap.repos]` entry, which fast-forwards the same
-clone on later runs. The Ubuntu zsh block sources `oh-my-zsh.sh` only when
-the file exists. The login shell is declared in `[bootstrap.user]` per
+installer never writes its template; it then clones the
+`zsh-autosuggestions` plugin into the custom plugins directory or
+fast-forwards the existing clone. The plugin is not a `[bootstrap.repos]`
+entry: the repos phase runs before `pre-user`, and the upstream installer
+refuses an existing `~/.oh-my-zsh`. The Ubuntu zsh block sources
+`oh-my-zsh.sh` only when the file exists. The login shell is declared in `[bootstrap.user]` per
 platform file, but mise's own `chsh` runs as the user and asks for the
 account password, which a key-only server account may lack; the `pre-user`
 hook therefore sets the shell with `{{ vars.sudo }} chsh` first and mise
