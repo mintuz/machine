@@ -56,11 +56,13 @@ run = [
 ]
 
 # Oh My Zsh before the repos phase clones its plugin. The upstream installer
-# only clones when the directory is missing; the flags keep it from changing
-# the login shell, replacing ~/.zshrc or starting a shell.
+# runs only when the directory is missing; the flags keep it from changing
+# the login shell, replacing ~/.zshrc (an empty file counts, so one is
+# created first) or starting a shell.
 [bootstrap.hooks.pre-repos]
 run = '''
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
+  [ -e "$HOME/.zshrc" ] || touch "$HOME/.zshrc"
   installer="$(mktemp "${TMPDIR:-/tmp}/ohmyzsh-install.XXXXXX")"
   trap 'rm -f "$installer"' EXIT
   curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \

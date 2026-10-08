@@ -17,8 +17,14 @@ else
 fi
 '''
 
+# The login shell. mise's own `chsh` runs as the user and asks for the account
+# password, which a key-only server account may not have, so the hook sets it
+# with sudo first; mise then verifies it and reports drift.
 [bootstrap.user]
 login_shell = "/usr/bin/zsh"
+
+[bootstrap.hooks.pre-user]
+run = '[ "$(getent passwd "$(id -un)" | cut -d: -f7)" = /usr/bin/zsh ] || sudo -n chsh -s /usr/bin/zsh "$(id -un)"'
 
 # Shell startup blocks for Homebrew, mise and fzf in both shells, Oh My Zsh
 # with its plugin in zsh, and pnpm's global directory in bash (the external

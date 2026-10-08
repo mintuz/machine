@@ -65,8 +65,14 @@ else
 fi
 '''
 
+# The login shell. mise's own `chsh` runs as the user and asks for the account
+# password, so the hook sets it with sudo first; mise then verifies it and
+# reports drift. macOS accounts already default to zsh.
 [bootstrap.user]
 login_shell = "/bin/zsh"
+
+[bootstrap.hooks.pre-user]
+run = '[ "$(dscl . -read "/Users/$(id -un)" UserShell | cut -d " " -f 2)" = /bin/zsh ] || sudo -n chsh -s /bin/zsh "$(id -un)"'
 
 # Shell startup block for Homebrew, mise and fzf. A symlinked ~/.zshrc belongs
 # to the external dotfiles and is left unchanged with a notice.
