@@ -240,9 +240,7 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run(["/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "phone",
                     "-f", str(keys / "phone")], check=True)
     phone_line = (keys / "phone.pub").read_text().strip()
-    fixtures = {"personal.pub": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPersonal personal\n",
-                "work.pub": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIWork work\n",
-                "phone.pub": phone_line + "\n",
+    fixtures = {"phone.pub": phone_line + "\n",
                 "options.pub": 'command="true" ' + phone_line + "\n",
                 "two.pub": phone_line + "\n" + phone_line + "\n",
                 "private.pub": (keys / "phone").read_text()}
@@ -272,14 +270,9 @@ with tempfile.TemporaryDirectory() as directory:
     managed = fixture / "etc/sshd_config.d/010-remote-login.conf"
     managed.parent.mkdir(parents=True)
     base = {"home": str(home), "repo_dir": str(repo), "platform": "mac", "profile": "personal", "user": USER,
-            "shell_path": "/bin/zsh", "ssh_agent_socket": "/tmp/test-agent.sock",
-            "pnpm_home": str(home / "Library/pnpm"), "mise": str(binary / "mise"),
-            "brew_prefix": str(fixture / "brew"),
-            "personal_public_ssh_key": "personal.pub", "work_public_ssh_key": "work.pub",
+            "mise": str(binary / "mise"), "brew_prefix": str(fixture / "brew"),
             "remote_login_public_keys": ["phone.pub"],
             "remote_login_sources": ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
-            "steps": {"ssh": False, "git": True, "cli": True, "remote-login": False, "gui": True,
-                      "zsh": True, "app-store": True, "osx": True, "node": True, "dotfiles": True, "dock": True},
             "revoke_remote_login": False,
             "remote_login_sshd_file": str(managed), "tailscale_cli": tailscale,
             "remote_login_sshd": [fake_sshd], "remote_login_launchctl": launchctl,
@@ -300,7 +293,6 @@ with tempfile.TemporaryDirectory() as directory:
     def invoke(action, check=False, env=None, **overrides):
         calls.write_text("")
         config = dict(base, **overrides)
-        config["steps"] = dict(base["steps"], **overrides.get("steps", {}))
         return subprocess.run([sys.executable, "-c", RUNNER, str(root / "scripts"), action, json.dumps(config),
                                "1" if check else "0"],
                               env=dict(environment, **(env or {})), text=True, capture_output=True)
@@ -325,68 +317,13 @@ with tempfile.TemporaryDirectory() as directory:
 
     # Common guards.
     fails(invoke("shields-up"), "Unknown security action")
-    fails(invoke("ssh", user="root", steps={"ssh": True}), "not root")
+    fails(invoke("remote-login", user="root"), "not root")
     fails(invoke("remote-login-check", profile="guest"), "Unsupported profile")
     print("PASS: unknown actions, root and invalid profiles are refused")
 
-    # Managed SSH client configuration.
     ssh_dir = home / ".ssh"
-    (ssh_dir / "agent").mkdir(parents=True)
-    (ssh_dir / "agent/placeholder").write_text("agent state\n")
-    (ssh_dir / "config").write_text("# original SSH config\n")
+    ssh_dir.mkdir(parents=True)
     backups = home / ".dev-setup-backups"
-    for system in ("mac", "linux"):
-        succeeds(invoke("ssh", platform=system, env={"SSH_AUTH_SOCK": "/tmp/forwarded-agent"}))
-        assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
-    succeeds(invoke("ssh", check=True, steps={"ssh": True}))
-    assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
-    fails(invoke("ssh", steps={"ssh": True}, personal_public_ssh_key="private.pub"), "private key")
-    fails(invoke("ssh", steps={"ssh": True}, personal_public_ssh_key="missing.pub"), "missing.pub")
-    assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
-    print("PASS: declined, previewed or invalid managed SSH leaves files and backups untouched on both platforms")
-
-    succeeds(invoke("ssh", steps={"ssh": True}))
-    first = (ssh_dir / "config").read_text()
-    assert 'IdentityAgent "/tmp/test-agent.sock"' in first
-    assert "Host github.com\n  HostName github.com\n  # Downloaded from 1Password App\n" \
-           "  IdentityFile ~/.ssh/personal.pub\n" in first
-    assert "Host github-alt.com\n  HostName github.com\n  # Downloaded from 1Password App\n" \
-           "  IdentityFile ~/.ssh/work.pub\n" in first
-    succeeds(invoke("ssh", steps={"ssh": True}, platform="linux", profile="work",
-                    ssh_agent_socket=str(home / ".1password/agent.sock"),
-                    env={"SSH_AUTH_SOCK": "/tmp/forwarded-agent"}))
-    second = (ssh_dir / "config").read_text()
-    assert 'IdentityAgent "SSH_AUTH_SOCK"' in second and "/tmp/forwarded-agent" not in second
-    assert "  IdentityFile ~/.ssh/work.pub\n  IdentitiesOnly yes\n\nHost github-alt.com" in second
-    runs = sorted(backups.iterdir())
-    assert len(runs) == 2 and all(run.stat().st_mode & 0o777 == 0o700 for run in runs)
-    assert (runs[0] / "ssh/config").read_text() == "# original SSH config\n"
-    assert (runs[1] / "ssh/config").read_text() == first
-    assert not (runs[0] / "ssh/agent").exists(), "The agent directory was copied into a backup"
-    assert ssh_dir.stat().st_mode & 0o777 == 0o700
-    for name in ("config", "personal.pub", "work.pub"):
-        assert (ssh_dir / name).stat().st_mode & 0o777 == 0o600, name
-    assert (ssh_dir / "work.pub").read_text() == fixtures["work.pub"]
-    assert (ssh_dir / "agent/placeholder").read_text() == "agent state\n"
-    succeeds(invoke("ssh", steps={"ssh": True}, platform="linux"))
-    assert 'IdentityAgent "/tmp/test-agent.sock"' in (ssh_dir / "config").read_text()
-    assert len(list(backups.iterdir())) == 3
-    print("PASS: managed SSH keeps unique successive backups, profile keys, private modes and Linux agent forwarding")
-
-    broken_home = fixture / "broken-home"
-    (broken_home / ".ssh").mkdir(parents=True)
-    (broken_home / ".ssh/config").write_text("# original SSH config\n")
-    (broken_home / ".dev-setup-backups").write_text("not a directory\n")
-    fails(invoke("ssh", steps={"ssh": True}, home=str(broken_home)), "Could not back up",
-          "No managed SSH file was changed")
-    assert (broken_home / ".ssh/config").read_text() == "# original SSH config\n"
-    (broken_home / ".dev-setup-backups").unlink()
-    (broken_home / ".ssh/config").unlink()
-    (broken_home / ".ssh/config").mkdir()
-    fails(invoke("ssh", steps={"ssh": True}, home=str(broken_home)), "may be incomplete",
-          "The previous files are in")
-    assert len(list((broken_home / ".dev-setup-backups").glob("*/ssh/config"))) == 1
-    print("PASS: managed SSH backup and write failures are reported with the backup location")
 
     # Remote Login.
     authorized_keys = ssh_dir / "authorized_keys"
@@ -424,23 +361,21 @@ with tempfile.TemporaryDirectory() as directory:
         assert json.loads(access.read_text())["members"] == [USER, "intruder"], "Access list changed"
 
     reset()
-    for action in ("remote-login", "remote-login-revoke"):
-        succeeds(invoke(action))
-        unchanged()
-        assert logged() == [], calls.read_text()
+    succeeds(invoke("remote-login-revoke"))
+    unchanged()
+    assert logged() == [], calls.read_text()
     remote_actions = (
-        ("remote-login", {"steps": {"remote-login": True}}),
+        ("remote-login", {}),
         ("remote-login-revoke", {"revoke_remote_login": True}),
-        ("remote-login", {"steps": {"remote-login": True}, "revoke_remote_login": True}),
-        ("remote-login", {"steps": {"remote-login": False}, "revoke_remote_login": True}),
+        ("remote-login", {"revoke_remote_login": True}),
     )
     for action, flags in remote_actions:
         fails(invoke(action, platform="linux", **flags), "macOS only")
         assert logged() == []
-    print("PASS: unselected Remote Login actions leave access unchanged; enabled actions require macOS")
+    print("PASS: an unrequested revocation leaves access unchanged; enabled actions require macOS")
 
     if not IS_MAC:
-        fails(invoke("remote-login", steps={"remote-login": True}), "macOS only")
+        fails(invoke("remote-login"), "macOS only")
         fails(invoke("remote-login-check"), "macOS only")
         assert logged() == []
         print("SKIP: Remote Login executable-state checks need macOS; non-macOS refusal confirmed")
@@ -474,28 +409,27 @@ with tempfile.TemporaryDirectory() as directory:
     ]
     for overrides, env, message in preflight_failures:
         for action, check in (("remote-login-check", False), ("remote-login", False), ("remote-login", True)):
-            fails(invoke(action, check=check, env=env, steps={"remote-login": True}, **overrides), message)
+            fails(invoke(action, check=check, env=env, **overrides), message)
             assert not any(line.startswith(("sudo", "launchctl", "sshd", "dscl", "dseditgroup"))
                            for line in logged()), calls.read_text()
             unchanged()
-    succeeds(invoke("remote-login", check=True, steps={"remote-login": True}))
+    succeeds(invoke("remote-login", check=True))
     assert {line.split()[0] for line in logged()} == {"tailscale", "ssh-keygen"}
     unchanged()
     print("PASS: phone-key, source and Tailscale preflight failures and check mode stop before sudo or changes")
 
-    enable = {"steps": {"remote-login": True}}
-    fails(invoke("remote-login", env={"TEST_REMOTE_STOP_FAIL": "1"}, **enable),
+    fails(invoke("remote-login", env={"TEST_REMOTE_STOP_FAIL": "1"}),
           "Could not stop Remote Login", "bootout refused", "No SSH configuration or keys have been replaced")
     unchanged(service_disabled=True)
     assert not any(line.startswith("sshd") for line in logged())
     print("PASS: a listener stop failure prevents configuration validation and writes")
 
     reset()
-    fails(invoke("remote-login", env={"TEST_SUDO_STATUS": "1"}, **enable), "Sudo authorization failed")
+    fails(invoke("remote-login", env={"TEST_SUDO_STATUS": "1"}), "Sudo authorization failed")
     unchanged()
     assert not any(line.startswith(("launchctl", "sshd", "dseditgroup")) for line in logged())
     for value in ("not-a-port", 70000):
-        fails(invoke("remote-login", remote_login_port=value, **enable), "remote_login_port")
+        fails(invoke("remote-login", remote_login_port=value), "remote_login_port")
         unchanged()
         assert not any(line.startswith(("sudo", "launchctl")) for line in logged())
     print("PASS: refused sudo authorization and invalid numeric settings stop before any service change")
@@ -507,7 +441,7 @@ with tempfile.TemporaryDirectory() as directory:
             managed.symlink_to(fixture / "link-target")
         else:
             managed.mkdir()
-        fails(invoke("remote-login", **enable), "must be absent or a regular file", "remains disabled")
+        fails(invoke("remote-login"), "must be absent or a regular file", "remains disabled")
         assert disabled.exists() and not running.exists()
         assert authorized_keys.read_text() == old_keys and not any(line.startswith("sshd") for line in logged())
         assert managed.is_symlink() if kind == "symlink" else managed.is_dir()
@@ -535,7 +469,7 @@ with tempfile.TemporaryDirectory() as directory:
         for existed in (True, False):
             reset(config_text=original_config if existed else None)
             before = managed.stat() if existed else None
-            fails(invoke("remote-login", env=env, **enable), "Remote Login remains disabled",
+            fails(invoke("remote-login", env=env), "Remote Login remains disabled",
                   "Original failure", message)
             assert disabled.exists() and not running.exists()
             if existed:
@@ -563,7 +497,7 @@ with tempfile.TemporaryDirectory() as directory:
     expected_path = ":".join([str(local_bin), str(fixture / "mise-data/shims"), str(fixture / "brew/bin"),
                               "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
     reset()
-    output = succeeds(invoke("remote-login", **enable))
+    output = succeeds(invoke("remote-login"))
     deployed = managed.read_text()
     assert f"AllowUsers {USER}@100.64.0.0/10 {USER}@fd7a:115c:a1e0::/48\n" in deployed
     assert f"SetEnv PATH={expected_path}\n" in deployed and "Match all\n" in deployed
@@ -590,7 +524,7 @@ with tempfile.TemporaryDirectory() as directory:
     print("PASS: enablement stops first, gates the deployed file, then replaces keys and access before activation")
 
     second_digest = hashlib.sha1(authorized_keys.read_bytes()).hexdigest()
-    succeeds(invoke("remote-login", **enable))
+    succeeds(invoke("remote-login"))
     assert not list(backups.glob(f"*/remote-login-{second_digest}")), "Unchanged keys were backed up again"
     assert not any(line.startswith("dseditgroup") for line in logged()), "A correct access list was edited"
     print("PASS: a repeated enablement keeps unchanged keys and access lists without extra backups or edits")
@@ -600,20 +534,20 @@ with tempfile.TemporaryDirectory() as directory:
         assert not any(line.startswith(("launchctl enable", "launchctl bootstrap")) for line in logged())
 
     reset()
-    fails(invoke("remote-login", env={"TEST_DSEDITGROUP_IGNORE_DELETE": "1"}, **enable),
+    fails(invoke("remote-login", env={"TEST_DSEDITGROUP_IGNORE_DELETE": "1"}),
           "Remote Login remains disabled", "could not be limited")
     failed_closed()
     reset()
     authorized_keys.unlink()
     (fixture / "keys-target").write_text(old_keys)
     authorized_keys.symlink_to(fixture / "keys-target")
-    fails(invoke("remote-login", **enable), "Remote Login remains disabled", "absent or a regular file")
+    fails(invoke("remote-login"), "Remote Login remains disabled", "absent or a regular file")
     failed_closed()
     assert authorized_keys.is_symlink() and (fixture / "keys-target").read_text() == old_keys
     reset()
     backups.rename(fixture / "backups-aside")
     backups.write_text("not a directory\n")
-    fails(invoke("remote-login", **enable), "Remote Login remains disabled", "could not be updated")
+    fails(invoke("remote-login"), "Remote Login remains disabled", "could not be updated")
     failed_closed()
     assert authorized_keys.read_text() == old_keys
     reset()
@@ -623,12 +557,12 @@ with tempfile.TemporaryDirectory() as directory:
     backups.unlink()
     (fixture / "backups-aside").rename(backups)
     reset()
-    fails(invoke("remote-login", env={"TEST_REMOTE_ENABLE_FAIL": "1"}, **enable),
+    fails(invoke("remote-login", env={"TEST_REMOTE_ENABLE_FAIL": "1"}),
           "activation failed and it has been disabled again", "enable: Operation not permitted")
     assert disabled.exists() and not running.exists()
     assert not any(line.startswith("launchctl bootstrap") for line in logged())
     reset()
-    succeeds(invoke("remote-login", env={"TEST_DSCL_MULTILINE": "1"}, **enable))
+    succeeds(invoke("remote-login", env={"TEST_DSCL_MULTILINE": "1"}))
     assert json.loads(access.read_text()) == {"exists": True, "members": [USER], "nested": {}}
     print("PASS: post-gate key, access-list and enable failures leave Remote Login disabled; multi-line dscl "
           "output is handled")
@@ -638,12 +572,12 @@ with tempfile.TemporaryDirectory() as directory:
                             f"127.0.0.1:{closed_port}")]
     for env, overrides, message in activation_failures:
         reset()
-        fails(invoke("remote-login", env=env, **enable, **overrides),
+        fails(invoke("remote-login", env=env, **overrides),
               "activation failed and it has been disabled again", "Original failure", message)
         assert disabled.exists() and not running.exists()
         assert index("launchctl bootstrap") < index("launchctl bootout", last=True)
     reset(service_running=False, service_disabled=True)
-    fails(invoke("remote-login", env={"TEST_REMOTE_BOOTSTRAP_FAIL": "1", "TEST_REMOTE_STOP_FAIL": "1"}, **enable),
+    fails(invoke("remote-login", env={"TEST_REMOTE_BOOTSTRAP_FAIL": "1", "TEST_REMOTE_STOP_FAIL": "1"}),
           "shutdown could not be confirmed", "bootout refused", "Original activation failure",
           "bootstrap: Input/output error")
     print("PASS: activation and port-check failures disable Remote Login again and report the original failure")
@@ -667,24 +601,22 @@ with tempfile.TemporaryDirectory() as directory:
     assert authorized_keys.read_text() == old_keys
     print("PASS: offline revocation needs no Tailscale, Homebrew or phone keys, backs up and clears keys, and stays off")
 
-    for selected in (True, False):
-        reset()
-        succeeds(invoke("remote-login", check=True, steps={"remote-login": selected}, **revoke))
-        unchanged()
-        assert logged() == []
-        succeeds(invoke("remote-login", steps={"remote-login": selected}, **revoke))
-        assert disabled.exists() and not running.exists()
-        assert authorized_keys.read_text() == "" and authorized_keys.stat().st_mode & 0o777 == 0o600
-        assert managed.read_text() == original_config
-        assert any(backup.read_text() == old_keys for backup in backups.glob("*/remote-login-*/authorized_keys"))
-        assert not any(line.startswith(("tailscale", "sshd", "dscl", "dseditgroup", "ssh-keygen",
-                                        "launchctl enable", "launchctl bootstrap")) for line in logged())
-        reset()
-        fails(invoke("remote-login", steps={"remote-login": selected},
-                     env={"TEST_REMOTE_STOP_FAIL": "1"}, **revoke),
-              "Could not stop Remote Login")
-        assert authorized_keys.read_text() == old_keys
-    print("PASS: revocation overrides remote-login selection, stops the listener and clears keys; "
+    reset()
+    succeeds(invoke("remote-login", check=True, **revoke))
+    unchanged()
+    assert logged() == []
+    succeeds(invoke("remote-login", **revoke))
+    assert disabled.exists() and not running.exists()
+    assert authorized_keys.read_text() == "" and authorized_keys.stat().st_mode & 0o777 == 0o600
+    assert managed.read_text() == original_config
+    assert any(backup.read_text() == old_keys for backup in backups.glob("*/remote-login-*/authorized_keys"))
+    assert not any(line.startswith(("tailscale", "sshd", "dscl", "dseditgroup", "ssh-keygen",
+                                    "launchctl enable", "launchctl bootstrap")) for line in logged())
+    reset()
+    fails(invoke("remote-login", env={"TEST_REMOTE_STOP_FAIL": "1"}, **revoke),
+          "Could not stop Remote Login")
+    assert authorized_keys.read_text() == old_keys
+    print("PASS: revocation on the remote-login action stops the listener and clears keys; "
           "preview and stop-failure guards still apply")
 
     sshd = Path("/usr/sbin/sshd")
@@ -720,7 +652,7 @@ with tempfile.TemporaryDirectory() as directory:
         for name, text, message in cases:
             main.write_text(text)
             reset()
-            result = invoke("remote-login", **enable, **real)
+            result = invoke("remote-login", **real)
             if message:
                 fails(result, "Remote Login remains disabled", message)
             else:

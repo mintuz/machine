@@ -1,30 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-caller_dir="${MISE_ORIGINAL_CWD:-$PWD}"
 repo_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$repo_dir"
 os_release=/etc/os-release
+mode=""
 profile=""
-profile_explicit=false
 use_1password=""
 install_dotfiles=""
-config_args=()
-skip_args=()
-skip_names=""
-has_config=false
-dotfiles_explicit=false
+mise_skip=""
+local_skip=""
+# `mise bootstrap --help` lists these parts; gui and app-store are this
+# repository's own exclusions, honoured by the Brewfile hooks.
+mise_parts="plugins packages accounts files services firewall compose repos dotfiles mise-shell-activate shell macos-defaults defaults macos-launchd-agents launchd linux-systemd-units systemd user tools task final-hook"
+# Where install.sh records the machine's profile for later `mise run` tasks.
+record_file="${MISE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/mise}/miserc.local.toml"
+
 usage() {
-  echo "Usage: $0 [personal|work|--bootstrap-only] [--config PATH] [--skip STEP] [--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]" >&2
+  echo "Usage: $0 [personal|work|--bootstrap-only] [--skip NAME[,NAME...]] [--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]" >&2
   exit 64
 }
 while [[ $# -gt 0 ]]; do
   argument="$1"
   case "$argument" in
-    personal|work|--bootstrap-only)
-      [[ -z "$profile" ]] || usage
+    personal|work)
+      [[ -z "$profile" && -z "$mode" ]] || usage
       profile="$argument"
-      if [[ "$argument" != --bootstrap-only ]]; then profile_explicit=true; fi
+      ;;
+    --bootstrap-only)
+      [[ -z "$profile" && -z "$mode" ]] || usage
+      mode="$argument"
       ;;
     --1password-ssh|--keep-ssh)
       [[ -z "$use_1password" ]] || usage
@@ -32,56 +37,56 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dotfiles|--skip-dotfiles)
       [[ -z "$install_dotfiles" ]] || usage
-      dotfiles_explicit=true
       if [[ "$argument" == --dotfiles ]]; then install_dotfiles=true; else install_dotfiles=false; fi
       ;;
-    --config)
-      [[ "$has_config" == false && $# -ge 2 && -n "$2" ]] || usage
-      config_path="$2"
-      case "$config_path" in /*) ;; *) config_path="$caller_dir/$config_path" ;; esac
-      config_args+=(--config "$config_path")
-      has_config=true
-      shift
-      ;;
     --skip)
-      [[ $# -ge 2 ]] || usage
-      case "$2" in
-        ssh|git|cli|remote-login|gui|zsh|app-store|osx|node|dotfiles|dock) ;;
-        *) echo "Unknown or mandatory step: $2" >&2; usage ;;
-      esac
-      skip_args+=(--skip "$2")
-      skip_names="$skip_names $2"
+      [[ $# -ge 2 && -n "$2" ]] || usage
+      for name in ${2//,/ }; do
+        case " gui app-store $mise_parts " in
+          *" $name "*) ;;
+          *)
+            echo "Unknown --skip name '$name'. Use gui, app-store or a mise bootstrap part:" >&2
+            echo "  ${mise_parts// /, }" >&2
+            exit 64
+            ;;
+        esac
+        case "$name" in
+          gui|app-store) local_skip="$local_skip,$name" ;;
+          *) mise_skip="$mise_skip,$name" ;;
+        esac
+      done
       shift
       ;;
     *) usage ;;
   esac
   shift
 done
-for skipped_step in $skip_names; do
-  case "$skipped_step" in
-    ssh)
-      [[ "$use_1password" != true ]] || { echo "--skip ssh conflicts with --1password-ssh." >&2; exit 64; }
-      use_1password=false
-      ;;
-    dotfiles)
-      [[ "$install_dotfiles" != true ]] || { echo "--skip dotfiles conflicts with --dotfiles." >&2; exit 64; }
-      install_dotfiles=false
-      dotfiles_explicit=true
-      ;;
-  esac
-done
 if [[ -n "${DEVSETUP_PROFILE:-}" ]]; then
   case "$DEVSETUP_PROFILE" in
     personal|work) ;;
     *) echo "DEVSETUP_PROFILE must be personal or work." >&2; exit 64 ;;
   esac
-  if [[ -n "$profile" && "$profile" != --bootstrap-only && "$profile" != "$DEVSETUP_PROFILE" ]]; then
+  if [[ -n "$profile" && "$profile" != "$DEVSETUP_PROFILE" ]]; then
     echo "The requested profile conflicts with DEVSETUP_PROFILE." >&2
     exit 64
   fi
 fi
-if [[ -n "${DEVSETUP_PROFILE:-}" ]]; then profile_explicit=true; fi
-profile="${profile:-${DEVSETUP_PROFILE:-personal}}"
+# The profile for this run: the argument, DEVSETUP_PROFILE, then the record
+# from an earlier run. Bootstrap-only applies no profile-specific part.
+recorded=""
+if [[ -f "$record_file" ]]; then
+  recorded="$(awk -F'"' '/^env *= *\[/ { print $2; exit }' "$record_file")"
+fi
+case "$recorded" in personal|work) ;; *) recorded="" ;; esac
+run_profile="${profile:-${DEVSETUP_PROFILE:-$recorded}}"
+if [[ -z "$run_profile" ]]; then
+  if [[ "$mode" == --bootstrap-only ]]; then
+    run_profile=personal
+  else
+    echo "Pass personal or work: this machine has no recorded profile yet." >&2
+    exit 64
+  fi
+fi
 
 if [[ $EUID -eq 0 ]]; then
   echo "Run setup as your normal user with sudo access, not root." >&2
@@ -92,6 +97,7 @@ case "$(uname -s)" in
   Darwin) platform=macos ;;
   Linux)
     ID=""
+    # shellcheck source=/dev/null
     source "$os_release"
     if [[ "$ID" != ubuntu ]]; then
       echo "Only Ubuntu is supported on Linux." >&2
@@ -111,9 +117,9 @@ esac
 
 if [[ -z "$use_1password" ]]; then
   use_1password=false
-  if [[ -t 0 ]]; then
+  if [[ "$mode" != --bootstrap-only && -t 0 ]]; then
     while true; do
-      read -r -p "Use the 1Password SSH agent (back up and replace SSH config)? [y/N] " answer || break
+      read -r -p "Use the 1Password SSH agent (replace SSH config; mise keeps the previous file)? [y/N] " answer || break
       case "$answer" in
         y|Y|yes|Yes|YES) use_1password=true; break ;;
         n|N|no|No|NO|"") break ;;
@@ -129,42 +135,59 @@ else
 fi
 if [[ -z "$install_dotfiles" ]]; then
   install_dotfiles=true
-  if [[ "$platform" == ubuntu && "$profile" != --bootstrap-only && -t 0 ]]; then
-    if [[ "$has_config" == true ]]; then
-      echo "Press Enter to keep the dotfiles choice from your configuration (default Yes)."
-    fi
+  if [[ "$platform" == ubuntu && "$mode" != --bootstrap-only && -t 0 ]]; then
     while true; do
       read -r -p "Install your dotfiles? [Y/n] " answer || break
       case "$answer" in
-        y|Y|yes|Yes|YES) dotfiles_explicit=true; break ;;
-        "") break ;;
-        n|N|no|No|NO) install_dotfiles=false; dotfiles_explicit=true; break ;;
+        y|Y|yes|Yes|YES|"") break ;;
+        n|N|no|No|NO) install_dotfiles=false; break ;;
         *) echo "Please answer yes or no." ;;
       esac
     done
   fi
 fi
 
-# OS prerequisites, Homebrew, then the checksummed mise release and the locked
-# Python. bootstrap-mise.sh sets mise_bin and python_bin.
+# Remember the profile given on the command line so later runs and the mise
+# tasks need no profile. The file is mise's own per-machine environment
+# selection; only its env line is written.
+if [[ -n "$profile" && "$recorded" != "$profile" ]]; then
+  record="env = [\"$profile\"]"
+  mkdir -p "${record_file%/*}"
+  if [[ -f "$record_file" ]] && grep -q '^env *=' "$record_file"; then
+    updated="$(awk -v record="$record" '/^env *=/ && !done { print record; done = 1; next } { print }' "$record_file")"
+    printf '%s\n' "$updated" > "$record_file"
+  else
+    printf '%s\n' "$record" >> "$record_file"
+  fi
+  echo "Recorded the $profile profile in $record_file."
+fi
+
+# OS prerequisites, Homebrew (on PATH for the bootstrap hooks), then the
+# checksummed mise release and the locked Python. bootstrap-mise.sh sets mise_bin.
+# shellcheck source=/dev/null
 source "$repo_dir/scripts/bootstrap-$platform.sh"
 source "$repo_dir/scripts/bootstrap-homebrew.sh"
 source "$repo_dir/scripts/bootstrap-mise.sh"
+for command in git curl; do
+  command -v "$command" >/dev/null 2>&1 || { echo "Required command '$command' is missing after bootstrap." >&2; exit 1; }
+done
 
-if [[ "$use_1password" == true ]]; then ssh_flag=--1password-ssh; else ssh_flag=--keep-ssh; fi
-bootstrap_profile="$profile"
-if [[ "$bootstrap_profile" == --bootstrap-only ]]; then bootstrap_profile="${DEVSETUP_PROFILE:-personal}"; fi
-# Remote Login is a separate, explicit operation after software installation.
-common_args=(--mise "$mise_bin" "$ssh_flag" --keep-remote-login)
-if [[ "$profile_explicit" == true ]]; then common_args+=(--profile "$bootstrap_profile"); fi
-common_args+=(${config_args[@]+"${config_args[@]}"})
-"$python_bin" "$repo_dir/scripts/setup.py" bootstrap "${common_args[@]}" ${skip_args[@]+"${skip_args[@]}"}
-
-if [[ "$profile" != --bootstrap-only ]]; then
-  dotfiles_args=()
-  if [[ "$dotfiles_explicit" == true ]]; then
-    if [[ "$install_dotfiles" == true ]]; then dotfiles_args=(--dotfiles); else dotfiles_args=(--skip-dotfiles); fi
-  fi
-  exec "$repo_dir/scripts/with-sudo-askpass.sh" "$python_bin" "$repo_dir/scripts/setup.py" install \
-    "${common_args[@]}" ${dotfiles_args[@]+"${dotfiles_args[@]}"} ${skip_args[@]+"${skip_args[@]}"}
+# Everything else is declared in the mise configuration. The sudo wrapper
+# authorises once for the login shell and the Mac update check.
+if [[ "$mode" == --bootstrap-only ]]; then
+  exec "$repo_dir/scripts/with-sudo-askpass.sh" "$mise_bin" -E "$run_profile" bootstrap --only files,user --yes
 fi
+mise_env="$run_profile"
+if [[ "$use_1password" == true ]]; then
+  mise_env="$mise_env,ssh"
+  # Keep the current SSH client configuration in mise's history before the template replaces it.
+  if [[ -f "$HOME/.ssh/config" ]]; then "$mise_bin" dot track --yes "$HOME/.ssh/config"; fi
+fi
+if [[ "$install_dotfiles" == false ]]; then mise_skip="$mise_skip,repos,task"; fi
+if [[ -n "$local_skip" ]]; then
+  export DEV_MACHINE_SKIP="${local_skip#,}"
+  echo "Skipping the ${DEV_MACHINE_SKIP//,/ and } Brewfiles (DEV_MACHINE_SKIP=$DEV_MACHINE_SKIP)."
+fi
+mise_args=(--yes)
+if [[ -n "$mise_skip" ]]; then mise_args+=(--skip "${mise_skip#,}"); fi
+exec "$repo_dir/scripts/with-sudo-askpass.sh" "$mise_bin" -E "$mise_env" bootstrap "${mise_args[@]}"

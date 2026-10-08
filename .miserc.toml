@@ -1,0 +1,6 @@
+# Early-init mise settings for this checkout. mise reads this file before any
+# mise.toml, so the two migration flags below must live here.
+# auto_env loads platform files such as mise.macos.toml and mise.linux.toml.
+# env_conf_d gives conf.d names like name.work.toml an environment meaning.
+auto_env = true
+env_conf_d = true

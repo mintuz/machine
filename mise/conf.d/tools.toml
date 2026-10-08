@@ -1,0 +1,23 @@
+# Every tool mise installs on a machine this repository configures, for both
+# profiles. mise loads this file inside the checkout and, through the symlink
+# that [dotfiles] in mise.toml creates at
+# ~/.config/mise/conf.d/dev-machine-setup.toml, from every other directory.
+# `os` limits an entry to one platform. A tool for one profile only belongs
+# in mise.personal.toml or mise.work.toml instead. `mise run cli` installs
+# the selection; a failure stops setup.
+
+[tools]
+deno = "latest"
+go = "latest"
+node = "lts"
+pnpm = "latest"
+"npm:yarn" = "latest"
+
+# Ubuntu providers for the CLI casks in packages/mac/Brewfile.cli.
+"aqua:openai/codex" = { version = "latest", os = ["linux"] }
+1password-cli = { version = "latest", os = ["linux"] }
+"aqua:anthropics/claude-code" = { version = "latest", os = ["linux"] }
+"npm:ntn" = { version = "latest", os = ["linux"] }
+
+# Use the published release without trusting a third-party Homebrew formula.
+"aqua:XcodesOrg/xcodes" = { version = "latest", os = ["macos"] }

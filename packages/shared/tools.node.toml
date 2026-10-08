@@ -1,7 +1,0 @@
-# Node ecosystem tools owned by the node step: the runtime, pnpm and npm:
-# providers. The step also installs pnpm_global_packages from defaults.toml.
-
-[tools]
-node = "lts"
-pnpm = "latest"
-"npm:yarn" = "latest"

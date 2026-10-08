@@ -77,7 +77,7 @@ SH
   assert_access_unchanged
 }
 
-@test "relative configuration selects the caller file including mise original cwd" {
+require_real_config_host() {
   [ "$EUID" -ne 0 ] || skip "real config loading requires a normal user"
   case "$(uname -s):$(uname -m)" in
     Darwin:arm64) ;;
@@ -88,18 +88,37 @@ SH
       ;;
     *) skip "real config loading requires an ARM64 Mac or Ubuntu host" ;;
   esac
+}
+
+@test "the local settings file is read and cannot set a test-only key" {
+  require_real_config_host
   use_real_python
-  mkdir "$TEST_ROOT/caller with spaces"
-  # A test-only key is rejected with its name, which proves which local file was read without enabling access.
-  printf 'remote_login_port = 2222\n' > "$TEST_ROOT/caller with spaces/local.toml"
-  cd "$TEST_ROOT/caller with spaces"
-  run bash "$TEST_REPO/remote-login.sh" --config local.toml --check
+  # A test-only key is rejected with its name, which proves which file was read without enabling access.
+  printf 'remote_login_port = 2222\n' > "$TEST_REPO/remote-login.local.toml"
+  cd "$TEST_ROOT"
+  run bash "$TEST_REPO/remote-login.sh" --check
   [ "$status" -eq 1 ]
-  [[ "$output" == *"'remote_login_port' cannot be set"* ]]
+  [[ "$output" == *"remote-login.local.toml: 'remote_login_port' cannot be set"* ]]
   assert_access_unchanged
-  cd "$TEST_REPO"
-  run env MISE_ORIGINAL_CWD="$TEST_ROOT/caller with spaces" bash ./remote-login.sh --config local.toml --check
+}
+
+@test "the launcher checks prerequisites before any service or key change" {
+  require_real_config_host
+  use_real_python
+  stub_command launchctl-fixture <<'SH'
+#!/bin/sh
+echo changed > "$TEST_ROOT/remote-service"
+exit 99
+SH
+  printf 'unchanged' > "$TEST_ROOT/remote-service"
+  printf 'remote_login_launchctl = "%s"\nremote_login_public_keys = ["not-prepared.pub"]\n' \
+    "$TEST_BIN/launchctl-fixture" > "$TEST_REPO/remote-login.local.toml"
+  run env DEVSETUP_PROFILE=personal bash "$TEST_REPO/remote-login.sh"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"'remote_login_port' cannot be set"* ]]
+  case "$(uname -s)" in
+    Darwin) [[ "$output" == *"not-prepared.pub"* ]] ;;
+    *) [[ "$output" == *"macOS only"* ]] ;;
+  esac
+  [ "$(cat "$TEST_ROOT/remote-service")" = unchanged ]
   assert_access_unchanged
 }

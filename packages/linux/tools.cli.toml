@@ -1,6 +1,0 @@
-# Ubuntu providers for the CLI casks in packages/mac/Brewfile.cli.
-
-[tools]
-"aqua:openai/codex" = "latest"
-1password-cli = "latest"
-"aqua:anthropics/claude-code" = "latest"

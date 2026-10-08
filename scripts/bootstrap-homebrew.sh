@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Sourced by install.sh after the OS bootstrap. Installs Homebrew with its
-# official installer at the ARM64 prefix that defaults.toml expects, and puts
-# it on the installer's PATH. Homebrew owns native formulae and casks; the
-# setup.py bootstrap step adds `brew shellenv` to the shell startup files.
+# official installer at the ARM64 prefix that the mise platform files expect,
+# and puts it on the installer's PATH for the bootstrap hooks. Homebrew owns
+# native formulae and casks; the post-user hook adds `brew shellenv` to the
+# shell startup files.
 : "${platform:?Source this file from install.sh}"
 case "$platform" in
   macos) brew_path=/opt/homebrew/bin/brew ;;

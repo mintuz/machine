@@ -1,4 +1,4 @@
-"""SSH client configuration and macOS Remote Login (SSH server) management.
+"""macOS Remote Login (SSH server) management.
 
 run(action, config, check=False) is the only public entry point. Every
 service, sshd, access-list and privileged file operation goes through
@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-ACTIONS = ("ssh", "remote-login-check", "remote-login", "remote-login-revoke")
+ACTIONS = ("remote-login-check", "remote-login", "remote-login-revoke")
 TEMPLATES = Path(__file__).resolve().parents[2] / "templates"
 SSH_SESSION_VARIABLES = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")
 
@@ -54,9 +54,7 @@ def run(action: str, config: dict, *, check: bool = False) -> None:
     try:
         _require_normal_user(config)
         _require_profile(config)
-        if action == "ssh":
-            _manage_ssh(config, check)
-        elif action == "remote-login-check":
+        if action == "remote-login-check":
             _require_mac(config)
             _preflight(config)
             print("Prerequisites passed. No services, SSH configuration, or keys were changed. "
@@ -165,81 +163,6 @@ def _new_backup_dir(home: Path) -> Path:
     raise AssertionError("unreachable")
 
 
-def _skip_agent_and_special_files(directory: str, names: list) -> list:
-    # Matches the former rsync -a --exclude=agent/: agent directories and sockets are not backed up.
-    skipped = []
-    for name in names:
-        mode = os.lstat(os.path.join(directory, name)).st_mode
-        if (name == "agent" and stat.S_ISDIR(mode)) or not (
-                stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
-            skipped.append(name)
-    return skipped
-
-
-# SSH client configuration (1Password agent).
-
-def _identity_agent(config: dict) -> str:
-    # A forwarded Linux agent is resolved per session; never save its temporary path.
-    if config.get("platform") == "linux" and os.environ.get("SSH_AUTH_SOCK"):
-        return "SSH_AUTH_SOCK"
-    agent = config.get("ssh_agent_socket")
-    if not isinstance(agent, str) or not agent or '"' in agent or not agent.isprintable():
-        raise RuntimeError("Managed SSH requires an agent socket path in ssh_agent_socket.")
-    return agent
-
-
-def _manage_ssh(config: dict, check: bool) -> None:
-    if not config["steps"]["ssh"]:
-        print("Managed SSH configuration not selected; existing SSH files and agents are unchanged.", flush=True)
-        return
-    if config.get("platform") not in ("mac", "linux"):
-        raise RuntimeError(f"Unsupported platform {config.get('platform')!r}.")
-    home = _absolute(config, "home")
-    repo = _absolute(config, "repo_dir")
-    agent = _identity_agent(config)
-    personal = _plain_filename(config.get("personal_public_ssh_key"), "personal_public_ssh_key")
-    work = _plain_filename(config.get("work_public_ssh_key"), "work_public_ssh_key")
-    keys = {}
-    for name in (personal, work):
-        try:
-            data = (repo / ".ssh" / name).read_bytes()
-        except OSError as error:
-            raise RuntimeError(f"Managed SSH requires the public key file .ssh/{name}: {error}") from error
-        if not data.strip():
-            raise RuntimeError(f"Managed SSH requires a public key in .ssh/{name}; the file is empty.")
-        if b"PRIVATE KEY" in data:
-            raise RuntimeError(f".ssh/{name} contains a private key. Keep only public keys in .ssh/.")
-        keys[name] = data
-    primary, alternate = (personal, work) if config["profile"] == "personal" else (work, personal)
-    content = _render("ssh_config", identity_agent=agent, primary_public_key=primary,
-                      alternate_public_key=alternate)
-    ssh_dir = home / ".ssh"
-    if check:
-        print(f"Check mode: would back up {ssh_dir}, then write {ssh_dir / 'config'} using "
-              f"IdentityAgent \"{agent}\" with {primary} as the GitHub key and copy {personal} and {work}. "
-              "Nothing was changed.", flush=True)
-        return
-    backup = None
-    if ssh_dir.exists():
-        try:
-            backup = _new_backup_dir(home) / "ssh"
-            shutil.copytree(ssh_dir, backup, symlinks=True, ignore=_skip_agent_and_special_files)
-        except (OSError, shutil.Error) as error:
-            raise RuntimeError(f"Could not back up {ssh_dir}: {error}. No managed SSH file was changed.") from error
-        print(f"Backed up {ssh_dir} to {backup}.", flush=True)
-    try:
-        _ensure_private_dir(ssh_dir)
-        _write_private(ssh_dir / "config", content.encode())
-        for name, data in keys.items():
-            _write_private(ssh_dir / name, data)
-    except OSError as error:
-        saved = f"The previous files are in {backup}." if backup else f"{ssh_dir} did not exist before this run."
-        raise RuntimeError(f"Managed SSH configuration may be incomplete: {error}. {saved}") from error
-    print(f"Managed SSH uses the 1Password agent ({agent}) with {primary} for github.com and {alternate} "
-          "for github-alt.com. Enable the 1Password SSH agent yourself; setup does not enable it or sign in.",
-          flush=True)
-
-
 # Remote Login.
 
 @dataclass(frozen=True)
@@ -344,9 +267,6 @@ def _preflight(config: dict) -> _RemoteLogin:
 def _enable_remote_login(config: dict, check: bool) -> None:
     if config.get("revoke_remote_login"):
         _revoke_remote_login(config, check)
-        return
-    if not config["steps"]["remote-login"]:
-        print("Remote Login not selected; existing Remote Login access is unchanged.", flush=True)
         return
     _require_mac(config)
     if not check:

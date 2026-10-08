@@ -11,8 +11,8 @@ setup_sandbox() {
   export XDG_CACHE_HOME="$HOME/.cache"
   export MISE_CONFIG_DIR="$XDG_CONFIG_HOME/mise" MISE_DATA_DIR="$XDG_DATA_HOME/mise"
   export MISE_CACHE_DIR="$XDG_CACHE_HOME/mise" MISE_STATE_DIR="$HOME/.local/state/mise"
-  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/new-mac.sh" "$REPO_ROOT/remote-login.sh" \
-    "$REPO_ROOT/defaults.toml" "$REPO_ROOT/mise.toml" "$TEST_REPO/"
+  cp "$REPO_ROOT/install.sh" "$REPO_ROOT/remote-login.sh" "$REPO_ROOT/remote-login.toml" \
+    "$REPO_ROOT/mise.toml" "$TEST_REPO/"
   cp -R "$REPO_ROOT/scripts" "$TEST_REPO/scripts"
   export PATH="$TEST_BIN:/usr/bin:/bin"
   unset DEVSETUP_PROFILE MISE_ORIGINAL_CWD SUDO_ASKPASS BASH_ENV ENV

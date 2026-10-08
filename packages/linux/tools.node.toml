@@ -1,4 +1,0 @@
-# Ubuntu npm provider for the notion-cli cask in packages/mac/Brewfile.cli.
-
-[tools]
-"npm:ntn" = "latest"

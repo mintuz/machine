@@ -1,0 +1,14 @@
+# Settings for the Remote Login commands (`./remote-login.sh`,
+# `mise run remote-login*`), Mac only. Copy the keys you change into
+# remote-login.local.toml next to this file (Git ignores it); a key there
+# replaces the one here. The profile is never stored here: `--profile` or
+# DEVSETUP_PROFILE choose it per run. Everything else that setup applies is
+# declared in the mise files.
+
+# Phone public key files in .ssh/, one key line each. Enablement needs at
+# least one; list them in remote-login.local.toml.
+remote_login_public_keys = []
+# Source addresses that may log in after unlock (not FileVault unlock).
+remote_login_sources = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+remote_login_sshd_file = "/etc/ssh/sshd_config.d/010-remote-login.conf"
+tailscale_cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"

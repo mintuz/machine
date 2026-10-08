@@ -1,0 +1,52 @@
+# Loaded on Ubuntu by auto_env (.miserc.toml): the login shell and the shell
+# startup blocks. apt prerequisites and zsh come from scripts/bootstrap-ubuntu.sh.
+[vars]
+brew_prefix = "/home/linuxbrew/.linuxbrew"
+# A forwarded SSH_AUTH_SOCK replaces this in templates/ssh_config with the
+# literal "SSH_AUTH_SOCK" so the session-specific socket path is never saved.
+ssh_agent_socket = "{{ env.HOME }}/.1password/agent.sock"
+
+# fzf key bindings and completion from the Homebrew formula, without editing
+# any shell file; the shell blocks below source ~/.fzf.zsh and ~/.fzf.bash.
+[bootstrap.hooks.post-packages]
+run = '''
+if [ -x "{{ vars.brew_prefix }}/opt/fzf/install" ]; then
+  "{{ vars.brew_prefix }}/opt/fzf/install" --key-bindings --completion --no-update-rc
+else
+  echo "fzf: not installed; skipped the key bindings and completion."
+fi
+'''
+
+# The login shell. mise's own `chsh` runs as the user and asks for the account
+# password, which a key-only server account may not have, so the hook sets it
+# with sudo first (vars.sudo in mise.toml); mise then verifies it and reports
+# drift.
+[bootstrap.user]
+login_shell = "/usr/bin/zsh"
+
+[bootstrap.hooks.pre-user]
+run = '[ "$(getent passwd "$(id -un)" | cut -d: -f7)" = /usr/bin/zsh ] || {{ vars.sudo }} chsh -s /usr/bin/zsh "$(id -un)"'
+
+# Shell startup blocks for Homebrew, mise and fzf in both shells, Oh My Zsh
+# with its plugin in zsh, and pnpm's global directory in bash (the external
+# dotfiles export it for zsh). The blocks activate the ~/.local/bin/mise link
+# that bootstrap keeps, so they read the same on every run. The Oh My Zsh
+# line is guarded so a removed ~/.oh-my-zsh never breaks zsh startup. A
+# symlinked file belongs to the external dotfiles and is left unchanged with
+# a notice.
+[bootstrap.hooks.post-user]
+run = '''
+for shell in zsh bash; do
+  "{{ vars.shell_block }}" "$HOME/.${shell}rc" "dev-machine mise" \
+    'eval "$({{ vars.brew_prefix }}/bin/brew shellenv)"' \
+    "eval \"\$(\"\$HOME/.local/bin/mise\" activate $shell)\"" \
+    "[ -f ~/.fzf.$shell ] && source ~/.fzf.$shell"
+done
+"{{ vars.shell_block }}" "$HOME/.zshrc" "dev-machine oh-my-zsh" \
+  'export ZSH="$HOME/.oh-my-zsh"' \
+  'plugins=(git zsh-autosuggestions)' \
+  '[ -f "$ZSH/oh-my-zsh.sh" ] && source "$ZSH/oh-my-zsh.sh"'
+"{{ vars.shell_block }}" "$HOME/.bashrc" "dev-machine Node and pnpm" \
+  'export PNPM_HOME="$HOME/.local/share/pnpm"' \
+  'export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"'
+'''
