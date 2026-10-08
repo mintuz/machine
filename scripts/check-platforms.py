@@ -110,47 +110,42 @@ with tempfile.TemporaryDirectory() as directory:
     print("PASS: unsupported OS, distribution, architecture, root, and relative mise are rejected")
 
     override = fixture / "local.toml"
-    override.write_text('profile = "work"\ngit_name = "Override Name"\nremote_login_sshd = ["/fake/sshd", "-f", "x"]\n'
+    override.write_text('git_name = "Override Name"\nremote_login_sshd = ["/fake/sshd", "-f", "x"]\n'
+                        'custom_note = "kept"\n'
                         '[linux]\npnpm_home = "~/custom-pnpm"\n[mac]\ntailscale_cli = "/fake/tailscale"\n')
-    merged = load("Linux", "aarch64", overrides=[override])
-    assert merged["profile"] == "work" and merged["git_name"] == "Override Name"
+    merged = load("Linux", "aarch64", override=override)
+    assert merged["git_name"] == "Override Name" and merged["custom_note"] == "kept"
     assert merged["pnpm_home"] == f"{real_home}/custom-pnpm" and "tailscale_cli" not in merged
     assert merged["remote_login_sshd"] == ["/fake/sshd", "-f", "x"]
-    assert load(overrides=[override])["tailscale_cli"] == "/fake/tailscale"
-    expect_error("Conflicting profiles", load, profile="personal", overrides=[override])
+    assert load(override=override)["tailscale_cli"] == "/fake/tailscale"
     for text, message in (("git_name = [", "Invalid TOML"), ('remote_login_sources = "100.64.0.0/10"', "list"),
                           ("[steps]\ndotfiles = 'yes'", "true or false"), ('home = "/tmp"', "cannot be set"),
-                          ('machine_type = "work"', "cannot be set"), ('[linux]\nprofile = "work"', "cannot be set"),
+                          ('machine_type = "work"', "cannot be set"), ('profile = "work"', "cannot be set"),
+                          ('[linux]\nprofile = "work"', "cannot be set"),
                           ("remote_login_sudo = []", "cannot be set"),
                           ("[linux]\nremote_login_port = 2222", "cannot be set"),
                           ('[linux]\nshell_path = "zsh"', "absolute")):
         override.write_text(text + "\n")
-        expect_error(message, load, "Linux", "aarch64", overrides=[override])
-    expect_error("Cannot read settings file", load, overrides=[fixture / "missing.toml"])
-    for text in ('git_emali = "typo@example.invalid"', '[mac.steps]\nappstore = false',
-                 '[linux]\nmanage_remote_logni = true', 'install_dotfiles = false'):
-        override.write_text(text + "\n")
-        expect_error("unknown", load, overrides=[override])
-    first_layer = fixture / "first.toml"
-    first_layer.write_text('[steps]\napp-store = false\ndock = false\n[mac.steps]\ndock = true\n')
-    override.write_text('[steps]\napp-store = true\n[mac.steps]\nosx = false\n')
-    selected = load(overrides=[first_layer, override], flags={"app-store": False})
+        expect_error(message, load, "Linux", "aarch64", override=override)
+    expect_error("Cannot read settings file", load, override=fixture / "missing.toml")
+    override.write_text('[steps]\napp-store = true\ndock = false\n[mac.steps]\ndock = true\nosx = false\n')
+    selected = load(override=override, flags={"app-store": False})
     assert selected["steps"]["dock"] and not selected["steps"]["osx"]
-    assert not selected["steps"]["app-store"], "explicit skip must win over later configuration"
-    assert load(overrides=[first_layer, override])["steps"]["app-store"]
+    assert not selected["steps"]["app-store"], "explicit skip must win over the override file"
+    assert load(override=override)["steps"]["app-store"]
     override.write_text('[mac]\nmacos_preferences = [["domain", "key"]]\n')
-    expect_error("domain, key and value", load, overrides=[override])
+    expect_error("domain, key and value", load, override=override)
     override.write_text('[mac]\ndock_items = [["relative.app"]]\n')
-    expect_error("absolute path", load, overrides=[override])
-    print("PASS: unknown settings fail and typed component choices merge by key with explicit precedence")
-    print("PASS: explicit local TOML layers merge per platform and malformed settings stop before changes")
+    expect_error("absolute path", load, override=override)
+    print("PASS: the override file merges per platform, steps merge by key with explicit precedence, "
+          "and malformed settings stop before changes")
 
 
 # Contradictory explicit choices must fail rather than silently turn into no-ops.
 for argv in (["dotfiles", "--skip-dotfiles"], ["install", "--keep-ssh", "--1password-ssh"],
              ["install", "--profile", "staging"], ["make"], ["install", "--skip", "preflight"],
              ["install", "--skip", "ssh", "--1password-ssh"], ["app-store", "--skip", "app-store"],
-             ["update", "--skip", "dotfiles"], ["node", "--revoke-remote-login"],
+             ["node", "--skip", "dotfiles"], ["node", "--revoke-remote-login"],
              ["install", "--skip"]):
     with open(os.devnull, "w") as quiet, contextlib.redirect_stderr(quiet):
         try:

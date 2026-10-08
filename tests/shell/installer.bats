@@ -73,6 +73,9 @@ assert_no_host_effects() {
       [ "$status" -eq 64 ]
       assert_no_host_effects
     done
+    run bash "$TEST_REPO/$entrypoint" --config one.toml --config two.toml
+    [ "$status" -eq 64 ]
+    assert_no_host_effects
   done
 }
 

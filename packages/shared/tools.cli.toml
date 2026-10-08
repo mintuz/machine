@@ -1,0 +1,8 @@
+# mise tools shared by macOS, Ubuntu and both profiles. Failures stop setup.
+# Setup merges the selected tools.cli.toml tables in layer order into the
+# machine-owned global fragment ~/.config/mise/conf.d/dev-machine-setup.toml.
+# Node, pnpm and npm: providers belong in tools.node.toml.
+
+[tools]
+deno = "latest"
+go = "latest"

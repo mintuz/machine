@@ -1,0 +1,69 @@
+# Homebrew casks installed for both profiles. Failures are reported and
+# setup continues. `brew bundle` adopts apps that are already in /Applications
+# and leaves self-updating apps alone unless an item says `greedy: true`.
+
+# Productivity and window management
+cask "cleanshot"
+cask "bettertouchtool"
+cask "lunar"
+cask "clop"
+cask "rectangle-pro"
+cask "alt-tab"
+cask "popclip"
+cask "bartender"
+cask "rcmd"
+cask "hammerspoon"
+cask "raycast"
+cask "thaw"
+
+# Privacy, security, and authentication
+cask "protonvpn"
+cask "tailscale-app"
+cask "little-snitch"
+cask "micro-snitch"
+cask "1password"
+
+# Terminals and developer tools
+cask "httpie-desktop"
+cask "warp"
+cask "ghostty"
+cask "cursor"
+cask "docker-desktop"
+cask "bruno"
+cask "proxyman"
+cask "xcodes-app"
+
+# AI assistants
+cask "chatgpt"
+cask "claude"
+cask "fluidvoice"
+cask "ollama-app"
+tap "steipete/tap"
+cask "steipete/tap/codexbar", trusted: true
+
+# Browsers
+cask "firefox"
+cask "helium-browser"
+cask "google-chrome"
+
+# Notes and knowledge
+cask "obsidian"
+cask "notion"
+cask "voicenotes"
+
+# Cloud storage and communication
+cask "dropbox"
+cask "zoom"
+cask "slack"
+
+# Design, media, and recording
+cask "figma"
+cask "rotato"
+cask "camo-studio"
+cask "sketch"
+
+# Fonts
+cask "font-fira-code"
+cask "font-hack"
+cask "font-jetbrains-mono"
+cask "font-recursive-code"

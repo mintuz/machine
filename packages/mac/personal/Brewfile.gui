@@ -1,0 +1,12 @@
+# Personal-only apps. Create packages/mac/work/Brewfile.gui for work-only apps.
+
+# Proton apps
+cask "proton-mail"
+cask "proton-drive"
+
+# Communication
+cask "discord"
+
+# Media
+cask "vlc"
+cask "downie"

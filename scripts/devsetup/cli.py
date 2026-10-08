@@ -16,7 +16,7 @@ from devsetup import config as config_module
 
 REPO_DIR = Path(__file__).resolve().parents[2]
 MAC_ONLY = ("gui", "app-store", "osx", "dock")
-SOFTWARE = ("packages", "gui", "app-store", "node", "update")
+SOFTWARE = ("packages", "gui", "app-store", "node")
 HOST = ("git", "zsh", "osx", "dock", "dotfiles")
 SECURITY = ("ssh", "remote-login-check", "remote-login", "remote-login-revoke")
 # Actions that check git, curl, and disk space first, as the old setup playbook did.
@@ -33,8 +33,7 @@ ACTIONS = {
     "dotfiles": "Install or refresh the external dotfiles",
     "git": "Install Git and apply global Git settings",
     "zsh": "Set the login shell and install oh-my-zsh",
-    "node": "Install the Node ecosystem, preserve npm globals and configure pnpm",
-    "update": "Update installed tools, apps, and models",
+    "node": "Install Node, pnpm and npm-backed tools with mise, then pnpm globals",
     "ssh": "Back up and configure SSH for the 1Password agent",
     "remote-login-check": "Check Remote Login prerequisites without changes",
     "remote-login": "Enable key-only tailnet Remote Login on this Mac",
@@ -131,8 +130,8 @@ def _parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     common.add_argument("--profile", choices=config_module.PROFILES,
                         help="personal or work (default personal; also DEVSETUP_PROFILE)")
-    common.add_argument("--config", dest="overrides", action="append", type=Path, default=[],
-                        metavar="PATH", help="explicit local TOML settings; repeat to layer")
+    common.add_argument("--config", type=Path, default=None, metavar="PATH",
+                        help="explicit local TOML settings file")
     common.add_argument("--mise", help="absolute path of the mise executable (default: mise on PATH)")
     common.add_argument("--skip", action="append", choices=config_module.STEPS, default=[],
                         metavar="STEP", help="exclude a named component for this aggregate run; repeatable")
@@ -164,10 +163,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     args.flags = {dest: getattr(args, dest) for dest in ("ssh", "dotfiles", "remote-login", "revoke_remote_login")
                   if getattr(args, dest) is not None}
-    if args.skip and args.action not in ("install", "update", "bootstrap"):
-        parser.error("--skip is only valid for aggregate setup, bootstrap hand-off and update.")
-    if args.action == "update" and set(args.skip) - {"cli", "gui", "node", "app-store"}:
-        parser.error("Update supports --skip cli, gui, node and app-store.")
+    if args.skip and args.action not in ("install", "bootstrap"):
+        parser.error("--skip is only valid for aggregate setup and bootstrap hand-off.")
     for name in args.skip:
         if args.flags.get(name) is True:
             parser.error(f"--skip {name} conflicts with an explicit request to enable that component.")
@@ -178,8 +175,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.action in config_module.STEPS and args.flags.get(args.action) is False:
         parser.error(f"{args.action} cannot be combined with an option that turns it off.")
     # mise tasks run from the repository; resolve --config from where the user ran them.
-    origin = Path(os.environ.get("MISE_ORIGINAL_CWD", "."))
-    args.overrides = [origin / path for path in args.overrides]
+    if args.config is not None:
+        args.config = Path(os.environ.get("MISE_ORIGINAL_CWD", ".")) / args.config
     if args.action == "remote-login-revoke":
         args.flags["revoke_remote_login"] = True
     return args
@@ -188,7 +185,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        config = config_module.load(repo_dir=REPO_DIR, profile=args.profile, overrides=args.overrides,
+        config = config_module.load(repo_dir=REPO_DIR, profile=args.profile, override=args.config,
                                     flags=args.flags, mise=args.mise)
         if args.action in config_module.STEPS:
             if not config["steps"][args.action]:

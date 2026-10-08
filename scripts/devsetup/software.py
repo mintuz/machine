@@ -1,23 +1,21 @@
-"""Package inventory, software installation, runtimes, and maintenance.
+"""Package inventories, Homebrew installation, mise tools and the Node ecosystem.
 
-Inventories live in packages/<layer>/<kind>.toml. Layers are applied in order:
-shared, shared/<profile>, <platform>, <platform>/<profile>. Kinds are cli
-(required), cli-optional, gui, gui-optional, and app-store; GUI and App Store
-kinds apply only on macOS.
+Inventories live in packages/<layer>/. Layers apply in order: shared,
+shared/<profile>, <platform>, <platform>/<profile>. Each layer may contain:
 
-Formulae and casks are installed and upgraded by Homebrew; App Store apps by
-mas. mise tools (runtimes and the Linux providers of CLI casks) are recorded in
-a machine-owned global mise fragment, conf.d/dev-machine-setup.toml, so they
+  Brewfile.cli, Brewfile.gui, Brewfile.app-store   Homebrew Bundle syntax
+  tools.cli.toml, tools.node.toml                  a mise [tools] table
+
+The Brewfiles of one kind are concatenated in layer order and piped to
+`brew bundle install`. Tool tables are merged in layer order into the
+machine-owned global mise fragment, conf.d/dev-machine-setup.toml, so they
 work outside this checkout without replacing the user's own mise configuration.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
-import plistlib
 from pathlib import Path
-import re
 import shlex
 import shutil
 import subprocess
@@ -26,25 +24,9 @@ import tomllib
 
 from .host import ensure_block
 
-KINDS = ("cli", "cli-optional", "gui", "gui-optional", "app-store")
-MAC_ONLY_KINDS = ("gui", "gui-optional", "app-store")
-INVENTORY_PATH = re.compile(
-    r"(shared|mac|linux)(/(personal|work))?/(cli(-optional)?|gui(-optional)?|app-store)\.toml")
-PACKAGE_MANAGERS = {
-    "cli": {"brew", "brew-cask"},
-    "cli-optional": {"brew", "brew-cask"},
-    "gui": {"brew-cask"},
-    "gui-optional": {"brew-cask"},
-    "app-store": {"mas"},
-}
-PROVIDERS = {
-    "tool": "mise tool",
-    "brew": "Homebrew formula",
-    "brew-cask": "Homebrew cask",
-    "mas": "mas",
-}
-MISE_OS = {"mac": "macos", "linux": "linux"}
-LAYER_OS = {"shared": {"macos", "linux"}, "mac": {"macos"}, "linux": {"linux"}}
+BREWFILES = {"cli": "Brewfile.cli", "gui": "Brewfile.gui", "app-store": "Brewfile.app-store"}
+TOOL_FILES = {"cli": "tools.cli.toml", "node": "tools.node.toml"}
+MAC_ONLY = ("gui", "app-store")
 BREW_PREFIX = {"mac": "/opt/homebrew", "linux": "/home/linuxbrew/.linuxbrew"}
 FRAGMENT_NAME = "dev-machine-setup.toml"
 FRAGMENT_HEADER = """\
@@ -52,26 +34,6 @@ FRAGMENT_HEADER = """\
 # them. Keep your own mise settings in config.toml or another conf.d file.
 """
 SHELL_BLOCK = "dev-machine Node and pnpm"
-
-
-@dataclass(frozen=True)
-class Entry:
-    kind: str
-    key: str
-    manager: str
-    name: str
-    version: str
-    os: frozenset
-    label: str
-    greedy: bool = False
-
-    @property
-    def is_tool(self):
-        return self.manager == "tool"
-
-    @property
-    def spec(self):
-        return f"{self.key}@{self.version}"
 
 
 def run(action: str, config: dict, *, check: bool = False) -> list[str]:
@@ -85,11 +47,10 @@ def run(action: str, config: dict, *, check: bool = False) -> list[str]:
         "gui": _gui,
         "app-store": _app_store,
         "node": _node,
-        "update": _update,
     }
     if action not in handlers:
         raise RuntimeError(f"Unknown software action: {action}")
-    if config.get("platform") not in MISE_OS or config.get("profile") not in ("personal", "work"):
+    if config.get("platform") not in BREW_PREFIX or config.get("profile") not in ("personal", "work"):
         raise RuntimeError("Software setup needs platform mac|linux and profile personal|work.")
     return handlers[action](config, _Shell(config, check)) or []
 
@@ -134,104 +95,45 @@ class _Shell:
 
 # Inventory
 
-def inventory_files(config):
-    """Validate every inventory path and return the selected files in apply order."""
+def layer_files(config, name):
+    """The existing files called ``name`` in the selected layers, in apply order."""
     root = Path(config["repo_dir"]) / "packages"
-    for path in sorted(root.rglob("*")):
-        if path.name.startswith(".") or not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix()
-        if not INVENTORY_PATH.fullmatch(relative):
-            raise RuntimeError(f"Invalid package inventory: packages/{relative}. "
-                               "Check the layer, profile, and file name.")
-    if not (root / "shared/cli.toml").is_file():
-        raise RuntimeError("Missing shared CLI inventory: packages/shared/cli.toml")
     platform, profile = config["platform"], config["profile"]
     layers = ("shared", f"shared/{profile}", platform, f"{platform}/{profile}")
-    return [root / layer / f"{kind}.toml" for layer in layers for kind in KINDS
-            if (root / layer / f"{kind}.toml").is_file()]
+    return [root / layer / name for layer in layers if (root / layer / name).is_file()]
 
 
-def _parse(path, repo_dir):
-    relative = path.relative_to(Path(repo_dir)).as_posix()
-    kind = path.stem
-    layer_os = LAYER_OS[path.relative_to(Path(repo_dir) / "packages").parts[0]]
+def brewfile(config, kind):
+    """The selected Brewfiles of one kind, concatenated in layer order."""
+    repo = Path(config["repo_dir"])
+    parts = []
+    for path in layer_files(config, BREWFILES[kind]):
+        parts.append(f"# {path.relative_to(repo).as_posix()}\n{path.read_text()}")
+    return "\n".join(parts)
 
-    def fail(message):
-        raise RuntimeError(f"Malformed package inventory {relative}: {message}")
 
-    try:
-        data = tomllib.loads(path.read_text())
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
-        fail(str(error))
-    allowed_sections = {"packages"} if kind in MAC_ONLY_KINDS else {"packages", "tools"}
-    if set(data) - allowed_sections:
-        fail(f"unexpected sections {sorted(set(data) - allowed_sections)}")
-    entries = []
-    for section in ("packages", "tools"):
-        table = data.get(section, {})
+def tools(config, kind):
+    """The selected mise [tools] tables of one kind, merged in layer order."""
+    repo = Path(config["repo_dir"])
+    merged = {}
+    for path in layer_files(config, TOOL_FILES[kind]):
+        relative = path.relative_to(repo).as_posix()
+        try:
+            table = tomllib.loads(path.read_text()).get("tools", {})
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+            raise RuntimeError(f"Malformed tool inventory {relative}: {error}") from error
         if not isinstance(table, dict):
-            fail(f"[{section}] must be a table")
-        for key, value in table.items():
-            options = {"version": value} if isinstance(value, str) else value
-            if not isinstance(options, dict):
-                fail(f"{key} must be a version string or table")
-            allowed = {"version", "os"}
-            allowed |= {"name"} if key.startswith("mas:") else set()
-            allowed |= {"greedy"} if key.startswith("brew-cask:") else set()
-            if set(options) - allowed:
-                fail(f"{key} has unsupported options {sorted(set(options) - allowed)}")
-            if not isinstance(options.get("greedy", False), bool):
-                fail(f"{key} greedy must be true or false")
-            version = options.get("version", "latest")
-            selector = options.get("os")
-            if not isinstance(version, str) or not version:
-                fail(f"{key} needs a version string")
-            if selector is not None and selector not in ("macos", "linux"):
-                fail(f"{key} has os {selector!r}; use macos or linux")
-            platforms = layer_os & ({selector} if selector else layer_os)
-            if not platforms:
-                fail(f"{key} never applies in this layer")
-            if section == "tools":
-                manager, name = "tool", key
-            else:
-                manager, separator, name = key.partition(":")
-                if not separator or not name:
-                    fail(f"{key} must be named manager:package")
-                if manager not in PACKAGE_MANAGERS[kind]:
-                    fail(f"{key} uses {manager}, which is not allowed in {kind} inventories")
-                if version != "latest":
-                    fail(f"{key} cannot be pinned; {manager} installs only the current version")
-                if manager == "mas" and not name.isdigit():
-                    fail(f"{key} needs a numeric App Store ID")
-                if (manager == "brew-cask" and kind not in MAC_ONLY_KINDS and "linux" in platforms
-                        and not name.startswith("font-")):
-                    fail(f"{key}: casks other than fonts are macOS-only; add os = \"macos\" and a Linux tool")
-            label = f"{key} ({options['name']})" if "name" in options else key
-            entries.append(Entry(kind, key, manager, name, version, frozenset(platforms), label,
-                                 options.get("greedy", False)))
-    return entries
+            raise RuntimeError(f"Malformed tool inventory {relative}: [tools] must be a table")
+        merged.update(table)
+    return merged
 
 
-def _entries(config, files):
-    target = MISE_OS[config["platform"]]
-    entries = []
-    for path in files:
-        for entry in _parse(path, config["repo_dir"]):
-            if target in entry.os and (config["platform"] == "mac" or entry.kind not in MAC_ONLY_KINDS):
-                entries.append(entry)
-    return entries
-
-
-def selected_entries(config):
-    return [entry for entry in _entries(config, inventory_files(config))
-            if config["steps"][_owner(entry)]]
-
-
-def _owner(entry):
-    if entry.is_tool and (entry.key in ("node", "pnpm") or entry.key.startswith("npm:")):
-        return "node"
-    return {"cli-optional": "cli", "gui-optional": "gui"}.get(entry.kind, entry.kind)
+def _specs(tools):
+    specs = []
+    for name, value in tools.items():
+        version = value.get("version", "latest") if isinstance(value, dict) else value
+        specs.append(f"{name}@{version}")
+    return specs
 
 
 # Paths and helpers
@@ -321,396 +223,60 @@ def record_tools(config, shell, tools):
         raise
 
 
-def _mise(config):
-    return config["mise"]
-
-
-def _brewfile(entries):
-    """Declare native packages with item-level trust for qualified names."""
-    lines = []
-    for entry in entries:
-        parts = entry.name.split("/")
-        if len(parts) == 3:
-            tap = f"tap {json.dumps('/'.join(parts[:2]))}"
-            if tap not in lines:
-                lines.append(tap)
-        kind = "brew" if entry.manager == "brew" else "cask"
-        line = f"{kind} {json.dumps(entry.name)}"
-        if len(parts) == 3:
-            line += ", trusted: true"
-        if entry.manager == "brew-cask" and entry.greedy:
-            line += ", greedy: true"
-        lines.append(line)
-    return "".join(line + "\n" for line in lines)
-
-
-def _bundle(shell, brew, entries):
-    """Install missing and upgrade outdated packages with `brew bundle`, as before."""
-    return shell.run([brew, "bundle", "install", "--file=-"], input=_brewfile(entries),
+def _bundle(shell, brew, text):
+    """Install missing and upgrade outdated packages with `brew bundle`."""
+    return shell.run([brew, "bundle", "install", "--file=-"], input=text,
                      env=dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1"))
 
 
-def _install_tools(config, shell, entries):
-    return shell.run([_mise(config), "install", *(entry.spec for entry in entries)])
-
-
-def _runtime_entries(config):
-    tools = {entry.key: entry for entry in selected_entries(config)
-             if entry.kind == "cli" and entry.is_tool}
-    missing = [name for name in ("node", "pnpm") if name not in tools]
-    if missing:
-        raise RuntimeError(f"The required CLI inventories must declare mise tools: {', '.join(missing)}")
-    return tools["node"], tools["pnpm"]
-
-
-# Probes must never install a missing Node as a side effect.
-NO_AUTO_INSTALL = {"MISE_AUTO_INSTALL": "0", "MISE_EXEC_AUTO_INSTALL": "0",
-                   "MISE_NOT_FOUND_AUTO_INSTALL": "0"}
-
-
-def _version_key(text):
-    return tuple(int(part) for part in re.findall(r"\d+", text))
-
-
-def _installed_mise_nodes(config, shell):
-    """Inspect registered installs, never treating PATH fallbacks as mise runtimes."""
-    status, output = shell.query([_mise(config), "ls", "--installed", "--json", "node"],
-                                 env=dict(shell.env, **NO_AUTO_INSTALL))
-    try:
-        if status != 0:
-            raise ValueError("mise ls failed")
-        installs = json.loads(output)
-        if not isinstance(installs, list):
-            raise ValueError("expected a list of installed Node runtimes")
-        nodes = {}
-        for item in installs:
-            if (not isinstance(item, dict) or not isinstance(item.get("version"), str)
-                    or not item["version"] or not isinstance(item.get("install_path"), str)
-                    or not Path(item["install_path"]).is_absolute()):
-                raise ValueError("invalid installed Node metadata")
-            executable = Path(item["install_path"]) / "bin/node"
-            if executable.is_file() and os.access(executable, os.X_OK):
-                nodes[executable] = item["version"]
-        return nodes
-    except (ValueError, OSError) as error:
-        raise RuntimeError(f"Could not inspect installed mise Node runtimes: {error}") from error
-
-
-def _mise_node_path(config, shell, spec, installs=None):
-    """Return the registered mise Node executable selected by spec, otherwise None."""
-    if installs is None:
-        installs = _installed_mise_nodes(config, shell)
-    status, output = shell.query([_mise(config), "exec", spec, "--", "node", "-p", "process.execPath"],
-                                 env=dict(shell.env, **NO_AUTO_INSTALL))
-    path = output.strip()
-    if status != 0 or not path:
-        return None
-    executable = Path(path).resolve()
-    return next((str(installed) for installed in installs if installed.resolve() == executable), None)
-
-
-def _previous_mise_node(config, shell, spec):
-    """The installed Node selected before an install, falling back to installed versions."""
-    if shell.check:
-        return None
-    installs = _installed_mise_nodes(config, shell)
-    if not installs:
-        return None
-    path = _mise_node_path(config, shell, spec, installs)
-    if path:
-        return Path(path).parent
-    return max(installs, key=lambda path: _version_key(installs[path])).parent
-
-
-def _npm_root(shell, bin_dir):
-    """The global node_modules of the Node in bin_dir, honouring the user's npm prefix."""
-    env = dict(shell.env, PATH=os.pathsep.join([str(bin_dir), shell.env["PATH"]]))
-    status, output = shell.query([Path(bin_dir) / "npm", "root", "-g"], env=env)
-    root = output.strip()
-    return Path(root) if status == 0 and root else None
-
-
-def _node_state_path(config):
-    path = fragment_path(config).with_suffix(".node.json")
-    _guard_fragment_path(path)
-    return path
-
-
-def _node_state(config):
-    path = _node_state_path(config)
-    if not path.exists():
-        return {}
-    try:
-        state = json.loads(path.read_text())
-        if (not isinstance(state, dict) or not isinstance(state.get("selector"), str)
-                or set(state) - {"selector", "source", "legacy", "target"}
-                or ("source" in state) != ("legacy" in state)
-                or ("source" in state and state["source"] is not None
-                    and not isinstance(state["source"], str))
-                or ("legacy" in state and not isinstance(state["legacy"], bool))
-                or ("target" in state and not isinstance(state["target"], str))):
-            raise ValueError("invalid Node migration state")
-        return state
-    except (OSError, ValueError) as error:
-        raise RuntimeError(f"Cannot read Node migration state {path}: {error}") from error
-
-
-def _save_node_state(config, shell, state):
-    path = _node_state_path(config)
-    if shell.check:
+def _install_tools(config, shell, tools):
+    """Install the tools with mise, then record them in the global fragment."""
+    if not tools:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".node-migration.")
-    try:
-        with os.fdopen(handle, "w") as stream:
-            json.dump(state, stream)
-            stream.write("\n")
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    if shell.run([config["mise"], "install", *_specs(tools)]) != 0:
+        raise RuntimeError("mise tools failed to install. See the mise output above.")
+    record_tools(config, shell, tools)
 
 
-def _begin_node_transfer(config, shell, selector):
-    """Keep one original source across retries, even if the requested target changes."""
-    state = _node_state(config)
-    tools = _fragment_tools(config)
-    value = tools.get("node")
-    version = value.get("version") if isinstance(value, dict) else value
-    if state.get("target") == version and version is not None:
-        # The fragment committed but clearing the pending journal was interrupted.
-        state = {"selector": state["selector"]}
-    if "source" not in state:
-        previous = _previous_mise_node(config, shell, f"node@{version}" if version else "node")
-        state = {"selector": selector, "source": str(previous) if previous else None,
-                 "legacy": "node" not in tools}
-    else:
-        if state["source"]:
-            source = (Path(state["source"]) / "node").resolve()
-            if not any(installed.resolve() == source for installed in _installed_mise_nodes(config, shell)):
-                raise RuntimeError(f"Previous mise Node runtime {state['source']} is no longer installed. "
-                                   "Restore it before retrying; the migration journal was preserved.")
-        state["selector"] = selector
-        state.pop("target", None)
-    _save_node_state(config, shell, state)
-    previous = Path(state["source"]) if state["source"] else None
-    if previous and "node" in tools:
-        # A floating selector would switch as soon as installation finishes.
-        record_tools(config, shell, {"node": previous.parent.name})
-    return previous, state["legacy"]
-
-
-def _commit_node_transfer(config, shell, selector, version, tools):
-    # Journal the proven target before the atomic fragment write. On restart a
-    # matching pin means transfer completed, even if clearing this journal failed.
-    state = _node_state(config)
-    _save_node_state(config, shell, {**state, "selector": selector, "target": version})
-    record_tools(config, shell, {**tools, "node": version})
-    _save_node_state(config, shell, {"selector": selector})
-    if not shell.check:
-        selected = _mise_node_path(config, shell, "node")
-        expected = _mise_node_path(config, shell, f"node@{version}")
-        if not selected or not expected or Path(selected).resolve() != Path(expected).resolve():
-            raise RuntimeError("Another mise configuration overrides the managed Node selection. "
-                               "Resolve that configuration before retiring the previous Node provider.")
-
-
-def _npm_globals(root):
-    """Map each package in a global node_modules to its version.
-
-    Linked or unreadable packages map to None because they cannot be reinstalled
-    at a known version.
-    """
-    found = {}
-    if not root or not root.is_dir():
-        return found
-    for item in sorted(root.iterdir()):
-        if item.name.startswith("."):
-            continue
-        scoped = item.name.startswith("@") and item.is_dir() and not item.is_symlink()
-        for package in (sorted(item.iterdir()) if scoped else [item]):
-            name = package.relative_to(root).as_posix()
-            if name in ("npm", "corepack"):
-                continue
-            version = None
-            if not package.is_symlink():
-                try:
-                    version = json.loads((package / "package.json").read_text()).get("version")
-                except (OSError, ValueError, AttributeError):
-                    version = None
-            found[name] = version if isinstance(version, str) and version else None
-    return found
-
-
-def _nvm_default(config):
-    """Return (bin dir, description, other versions) for nvm's default Node.
-
-    The default alias is followed through nvm's alias files, for example
-    default -> lts/* -> lts/jod -> v22.1.0. If it does not resolve, the newest
-    installed version is used and the description says so.
-    """
-    nvm = Path(config["home"]) / ".nvm"
-    versions = sorted((path for path in (nvm / "versions/node").glob("v*") if path.is_dir()),
-                      key=lambda path: _version_key(path.name))
-    if not versions:
-        return None, "", []
-    chain, value = [], "default"
-    for _ in range(8):
-        alias = nvm / "alias" / value
-        if not alias.is_file():
-            break
-        value = alias.read_text().strip()
-        chain.append(value)
-    wanted = value.removeprefix("v")
-    if wanted in ("node", "stable"):
-        matches = versions
-    else:
-        matches = [path for path in versions
-                   if path.name[1:] == wanted or path.name[1:].startswith(wanted + ".")]
-    if chain and matches:
-        chosen, how = matches[-1], "default alias " + " -> ".join(["default", *chain])
-    else:
-        chosen, how = versions[-1], "newest installed; the default alias did not resolve"
-    others = [path.name for path in versions if path != chosen]
-    return chosen / "bin", f"nvm {chosen.name} ({how})", others
-
-
-def _transfer_npm_globals(config, shell, previous_bin, active_bin, legacy):
-    """Install npm globals from earlier Node runtimes into the active mise Node.
-
-    Sources in precedence order: the previous mise Node, nvm's default Node,
-    then Homebrew node. The first source with a package decides its version,
-    and that exact version is installed. Packages already in the active runtime
-    are left alone, and nothing is removed from the earlier runtimes.
-    Legacy providers are read only before the machine fragment takes ownership
-    of Node. Later runs must not restore packages that the user uninstalled.
-    Returns the package specs that failed to install.
-    """
-    active_root = _npm_root(shell, active_bin)
-    if not active_root:
-        raise RuntimeError("Could not find the global npm directory of the mise Node runtime.")
-    sources = []
-    nvm_others = []
-    if previous_bin and Path(previous_bin).resolve() != Path(active_bin).resolve():
-        root = _npm_root(shell, previous_bin)
-        if not root:
-            raise RuntimeError(f"Could not inspect npm globals of previous Node runtime {previous_bin}.")
-        sources.append((f"previous mise Node {Path(previous_bin).parent.name}", root))
-    if legacy:
-        nvm_bin, nvm_label, nvm_others = _nvm_default(config)
-        if nvm_bin:
-            sources.append((nvm_label, nvm_bin.parent / "lib/node_modules"))
-        if (brew_prefix(config) / "Cellar/node").is_dir():
-            sources.append(("Homebrew node", brew_prefix(config) / "lib/node_modules"))
-    current = _npm_globals(active_root)
-    chosen = {}
-    for label, root in sources:
-        if root.resolve() == active_root.resolve():
-            continue
-        for name, version in _npm_globals(root).items():
-            if name not in chosen:
-                chosen[name] = (version, label)
-            elif chosen[name][0] != version:
-                print(f"npm global {name}: using {chosen[name][0]} from {chosen[name][1]}, "
-                      f"not {version} from {label}.", flush=True)
-    if nvm_others:
-        print(f"npm globals of other nvm versions are not moved: {', '.join(nvm_others)}", flush=True)
-    env = dict(shell.env, PATH=os.pathsep.join([str(active_bin), shell.env["PATH"]]))
-    failures = []
-    for name, (version, label) in chosen.items():
-        if name in current:
-            continue
-        if version is None:
-            print(f"Not moving npm global {name} from {label}: it is linked or has no readable version.",
-                  flush=True)
-            continue
-        print(f"Moving npm global {name}@{version} from {label} to the mise Node runtime.", flush=True)
-        if shell.run([Path(active_bin) / "npm", "install", "-g", f"{name}@{version}"], env=env) != 0:
-            failures.append(f"{name}@{version}")
-    return failures
-
-
-def _prepare_node(config, shell, spec, previous_bin, legacy):
-    """Prove the mise Node and move npm globals before committing its configuration.
-
-    Raises RuntimeError when the runtime does not run or a package fails to
-    move. The caller must record the working default before retiring Homebrew.
-    """
-    if shell.check:
-        print("Moving npm globals to the mise Node runtime: not previewed.", flush=True)
-        return spec.partition("@")[2]
-    path = _mise_node_path(config, shell, spec)
-    if not path:
-        raise RuntimeError("The mise Node runtime did not run after installation.")
-    print(f"mise Node runtime: {path}", flush=True)
-    failures = _transfer_npm_globals(config, shell, previous_bin, Path(path).parent, legacy)
-    if failures:
-        raise RuntimeError(f"npm global packages failed to move to the mise Node runtime: {', '.join(failures)}. "
-                           "Earlier Node runtimes and Homebrew node were left in place.")
-    return Path(path).parent.parent.name
-
-
-def _retire_brew_node(config, shell):
-    """Unlink Homebrew's node after its working replacement and globals are configured."""
-    brew = _brew(config)
-    if not brew or not (brew_prefix(config) / "var/homebrew/linked/node").exists():
-        return
-    if shell.run([brew, "unlink", "node"]) != 0:
-        print("Could not unlink Homebrew node; mise Node still comes first when activated.", flush=True)
+def _rerun(config, action):
+    return f"`mise run {action} --profile {config['profile']}`"
 
 
 # Actions
 
 def _packages(config, shell):
-    files = inventory_files(config)
-    entries = selected_entries(config)
     repo = Path(config["repo_dir"])
     print(f"Selected package inventories for {config['platform']}/{config['profile']}:")
-    for path in files:
-        if any(config["steps"][_owner(entry)] for entry in _entries(config, [path])):
-            print(f"  {path.relative_to(repo).as_posix()}")
-    titles = {"cli": "Required CLI", "cli-optional": "Optional CLI", "gui": "GUI applications",
-              "gui-optional": "Optional GUI applications", "app-store": "Mac App Store"}
-    for kind in KINDS:
-        chosen = [entry for entry in entries if entry.kind == kind]
-        if chosen:
-            print(f"{titles[kind]} ({len(chosen)}):")
-            for entry in chosen:
-                provider = PROVIDERS[entry.manager] + (f" {entry.version}" if entry.is_tool else "")
-                print(f"  {entry.label} [{provider}]")
+    for kind, name in (*BREWFILES.items(), *TOOL_FILES.items()):
+        if kind in MAC_ONLY and config["platform"] != "mac":
+            continue
+        for path in layer_files(config, name):
+            state = "" if config["steps"][kind] else " (skipped by configuration)"
+            print(f"  {path.relative_to(repo).as_posix()}{state}")
+    for kind in BREWFILES:
+        if config["steps"][kind] and (kind not in MAC_ONLY or config["platform"] == "mac"):
+            lines = [line for line in brewfile(config, kind).splitlines()
+                     if line.strip() and not line.lstrip().startswith("#")]
+            if lines:
+                print(f"\n{BREWFILES[kind]} for `brew bundle install` ({len(lines)}):")
+                print("".join(f"  {line}\n" for line in lines), end="")
+    for kind in TOOL_FILES:
+        if config["steps"][kind]:
+            specs = _specs(tools(config, kind))
+            if specs:
+                print(f"\n{TOOL_FILES[kind]} tools for `mise install`: {' '.join(specs)}")
     if config["platform"] != "mac":
-        print("GUI and App Store inventories apply only on macOS.")
-    print(f"mise runtime fragment: {fragment_path(config)}")
+        print("\nGUI and App Store inventories apply only on macOS.")
+    print(f"\nmise runtime fragment: {fragment_path(config)}")
 
 
 def _cli(config, shell):
-    entries = [entry for entry in selected_entries(config) if _owner(entry) == "cli"]
-    required = [entry for entry in entries if entry.kind == "cli"]
-    optional = [entry for entry in entries if entry.kind == "cli-optional"]
     brew = _require_brew(config)
     _remove_replaced_packages(config, shell, brew)
-    packages = [entry for entry in required if not entry.is_tool]
-    if packages and _bundle(shell, brew, packages) != 0:
-        raise RuntimeError("Required CLI packages failed to install or upgrade. See the output above.")
-    tools = [entry for entry in required if entry.is_tool]
-    if tools:
-        if _install_tools(config, shell, tools) != 0:
-            raise RuntimeError("Required mise tools failed to install. See the mise output above.")
-        record_tools(config, shell, {entry.key: entry.version for entry in tools})
-    issues = []
-    for entry in optional:
-        failed = (_install_tools(config, shell, [entry]) != 0 if entry.is_tool
-                  else _bundle(shell, brew, [entry]) != 0)
-        if failed:
-            issues.append(f"Optional CLI package {entry.key}: installation failed. Read the output "
-                          f"above, then run {_rerun(config, 'cli')}.")
-        elif entry.is_tool:
-            record_tools(config, shell, {entry.key: entry.version})
-    return issues
-
-
-def _rerun(config, action):
-    return f"`mise run {action} --profile {config['profile']}`"
+    text = brewfile(config, "cli")
+    if text and _bundle(shell, brew, text) != 0:
+        raise RuntimeError("CLI packages failed to install or upgrade. See the Homebrew output above.")
+    _install_tools(config, shell, tools(config, "cli"))
 
 
 def _remove_replaced_packages(config, shell, brew):
@@ -732,173 +298,32 @@ def _gui(config, shell):
     if config["platform"] != "mac":
         print("GUI applications are installed only on macOS; skipping.")
         return []
-    entries = [entry for entry in selected_entries(config) if entry.kind in ("gui", "gui-optional")]
-    brew = _require_brew(config)
-    env = dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1")
-    current = _self_updated_casks(shell, brew, env)
-    issues = []
-    for entry in entries:
-        # A Caskroom record without an installed version is not upgradeable.
-        installed, _ = shell.query([brew, "list", "--cask", "--versions", entry.name], env=env)
-        if installed == 0 and entry.name in current:
-            print(f"{entry.name}: the app is already at version {current[entry.name]} or newer; "
-                  "no Homebrew upgrade needed.", flush=True)
-            continue
-        command = (["upgrade", "--cask", "--greedy"] if installed == 0 else ["install", "--cask", "--adopt"])
-        if shell.run([brew, *command, entry.name], env=env) != 0:
-            issues.append(f"GUI app {entry.name}: {_cask_advice(config, shell, brew, env, entry.name)}")
-    return issues
-
-
-def _self_updated_casks(shell, brew, env):
-    """Map installed cask names to Homebrew's version when every app is that version or newer.
-
-    Apps that update themselves can be newer than Homebrew's record. A greedy upgrade
-    would download Homebrew's version and replace them, so setup leaves them alone.
-    Versions that are not plain dotted numbers are never compared.
-    """
-    code, output = shell.query([brew, "info", "--cask", "--json=v2", "--installed"], env=env)
-    try:
-        casks = json.loads(output)["casks"] if code == 0 else []
-    except (ValueError, KeyError, TypeError):
-        casks = []
-    current = {}
-    for cask in casks if isinstance(casks, list) else []:
-        if not isinstance(cask, dict) or not isinstance(cask.get("version"), str):
-            continue
-        # Homebrew appends build identifiers after a comma, for example "4.94.0,241994".
-        version = cask["version"].split(",")[0]
-        wanted = _numeric_version(version)
-        apps = [_app_version(target) for _, target in _cask_apps(cask)]
-        if wanted and apps and all(app and app >= wanted for app in apps):
-            current.update({name: version for name in (cask.get("token"), cask.get("full_token"))
-                            if isinstance(name, str)})
-    return current
-
-
-def _app_version(app):
-    try:
-        with open(app / "Contents/Info.plist", "rb") as handle:
-            info = plistlib.load(handle)
-    except (OSError, ValueError, plistlib.InvalidFileException):
-        return None
-    version = info.get("CFBundleShortVersionString") if isinstance(info, dict) else None
-    return _numeric_version(version) if isinstance(version, str) else None
-
-
-def _numeric_version(text):
-    """Return dotted integers without trailing zeros, so 6.5 equals 6.5.0; otherwise None."""
-    parts = text.strip().split(".")
-    if not all(part.isdigit() for part in parts):
-        return None
-    numbers = [int(part) for part in parts]
-    while len(numbers) > 1 and numbers[-1] == 0:
-        numbers.pop()
-    return tuple(numbers)
-
-
-def _cask_advice(config, shell, brew, env, name):
-    """Explain a failed cask change from read-only Homebrew metadata and app paths."""
-    rerun = _rerun(config, "gui")
-    code, output = shell.query([brew, "info", "--cask", "--json=v2", name], env=env)
-    try:
-        cask = json.loads(output)["casks"][0] if code == 0 else None
-    except (ValueError, KeyError, IndexError, TypeError):
-        cask = None
-    if not isinstance(cask, dict):
-        return f"Homebrew cannot read this cask. Check its name in packages/, then run {rerun}."
-    advice = []
-    for state, prefix in (("disabled", "disable"), ("deprecated", "deprecation")):
-        if cask.get(state):
-            reason = cask.get(f"{prefix}_reason")
-            replacement = (cask.get(f"{prefix}_replacement_cask")
-                           or cask.get(f"{prefix}_replacement_formula"))
-            advice.append(f"Homebrew has {state} this cask" + (f" ({reason})" if reason else "") + "."
-                          + (f" Replace it with {replacement} in packages/." if replacement
-                             else " Remove it from packages/."))
-            break
-    installed = cask.get("installed")
-    token = cask.get("token") or name.rsplit("/", 1)[-1]
-    for source, target in _cask_apps(cask) if isinstance(installed, str) else ():
-        # Homebrew links each installed app here. An upgrade moves the old app to this
-        # path and stops if a real copy remains from an earlier failed upgrade.
-        backup = brew_prefix(config) / "Caskroom" / token / installed / source
-        if backup.exists() and not backup.is_symlink():
-            advice.append(f"An earlier failed upgrade left a backup at '{backup}'. Make sure "
-                          f"'{target}' opens, remove the backup, then run {rerun}.")
-        elif not target.exists():
-            advice.append(f"Homebrew records version {installed}, but '{target}' is missing. "
-                          f"Run `brew uninstall --cask --force {name}`, then run {rerun}.")
-    if not advice:
-        advice.append("Homebrew did not finish. Read its output above. If a download failed, "
-                      f"check the network connection, then run {rerun}.")
-    return " ".join(advice)
-
-
-def _cask_apps(cask):
-    """Yield (source name, installed path) for each app artifact in Homebrew's cask JSON."""
-    for artifact in cask.get("artifacts") or []:
-        apps = artifact.get("app") if isinstance(artifact, dict) else None
-        if isinstance(apps, list) and apps and isinstance(apps[0], str):
-            source = Path(apps[0]).name
-            target = artifact.get("target")
-            yield source, Path(target) if isinstance(target, str) else Path("/Applications", source)
+    text = brewfile(config, "gui")
+    if text and _bundle(shell, _require_brew(config), text) != 0:
+        return [f"GUI apps: Homebrew did not install or upgrade every app. Read its output above, "
+                f"then run {_rerun(config, 'gui')}."]
+    return []
 
 
 def _app_store(config, shell):
     if config["platform"] != "mac":
         print("Mac App Store apps are installed only on macOS; skipping.")
         return []
-    entries = [entry for entry in selected_entries(config) if entry.kind == "app-store"]
-    mas = shell.which("mas")
-    if not mas:
-        brew = _require_brew(config)
-        if shell.run([brew, "install", "mas"], env=dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1")) != 0:
-            raise RuntimeError("Could not install the mas CLI needed for App Store apps.")
-        mas = shell.which("mas") or str(brew_prefix(config) / "bin/mas")
+    text = brewfile(config, "app-store")
+    if not text:
+        return []
+    # mas finds installed apps through Spotlight, so index /Applications first.
     shell.run(["mdimport", "/Applications"])
-    # Installed apps need no App Store lookup, so apps removed from sale stay valid.
-    code, output = shell.query([mas, "list"])
-    installed = {line.split()[0] for line in output.splitlines() if line.split()} if code == 0 else set()
-    sudo = ["sudo", "-A"] if shell.env.get("SUDO_ASKPASS") else ["sudo"]
-    rerun = _rerun(config, "app-store")
-    issues = []
-    for entry in entries:
-        if entry.name in installed:
-            print(f"{entry.label} is already installed.", flush=True)
-        elif code == 0 and shell.query([mas, "info", entry.name])[0] != 0:
-            issues.append(f"App Store app {entry.label}: the App Store has no Mac app with this ID. "
-                          "Make sure that the ID is for the Mac app, not the iPhone or iPad app, "
-                          "that the app is still for sale, and that this Mac can reach the App Store.")
-        elif (shell.run([*sudo, mas, "get", entry.name]) != 0
-              and shell.run([*sudo, mas, "install", entry.name]) != 0):
-            issues.append(f"App Store app {entry.label}: mas cannot install it. Make sure that you "
-                          f"are signed in to the App Store, then run {rerun}.")
-    return issues
+    if _bundle(shell, _require_brew(config), text) != 0:
+        return [f"App Store apps: mas did not install every app. Make sure that you are signed in "
+                f"to the App Store and that each ID is for a Mac app that is still for sale, then run "
+                f"{_rerun(config, 'app-store')}."]
+    return []
 
 
 def _node(config, shell):
-    node, pnpm = _runtime_entries(config)
-    previous, legacy = _begin_node_transfer(config, shell, node.version)
-    if _install_tools(config, shell, [node, pnpm]) != 0:
-        raise RuntimeError("Installing Node and pnpm with mise failed.")
-    version = _prepare_node(config, shell, node.spec, previous, legacy)
-    _commit_node_transfer(config, shell, node.version, version, {pnpm.key: pnpm.version})
-    providers = [entry for entry in selected_entries(config) if entry.key.startswith("npm:")]
-    required = [entry for entry in providers if entry.kind == "cli"]
-    if required:
-        if _install_tools(config, shell, required) != 0:
-            raise RuntimeError("Required npm-backed mise tools failed to install.")
-        record_tools(config, shell, {entry.key: entry.version for entry in required})
-    issues = []
-    for entry in providers:
-        if entry.kind != "cli-optional":
-            continue
-        if _install_tools(config, shell, [entry]) != 0:
-            issues.append(f"Optional npm-backed CLI {entry.key}: installation failed. Read the "
-                          f"output above, then run {_rerun(config, 'node')}.")
-        else:
-            record_tools(config, shell, {entry.key: entry.version})
+    node_tools = tools(config, "node")
+    _install_tools(config, shell, node_tools)
     if config["platform"] == "linux":
         for name in (".bashrc", ".zshrc"):
             ensure_block(Path(config["home"]) / name, SHELL_BLOCK,
@@ -910,183 +335,7 @@ def _node(config, shell):
     env = dict(shell.env, PNPM_HOME=str(pnpm_home),
                PATH=os.pathsep.join([str(pnpm_home / "bin"), str(pnpm_home), shell.env["PATH"]]))
     for package in config.get("pnpm_global_packages", []):
-        command = [_mise(config), "exec", f"node@{version}", pnpm.spec, "--", "pnpm", "add", "-g", f"{package}@latest"]
+        command = [config["mise"], "exec", *_specs(node_tools), "--", "pnpm", "add", "-g", f"{package}@latest"]
         if shell.run(command, env=env) != 0:
             raise RuntimeError(f"Installing the pnpm global package {package} failed.")
-    _retire_brew_node(config, shell)
-    return issues
-
-
-def _outdated_casks(shell, brew, env):
-    code, output = shell.query([brew, "outdated", "--cask", "--json=v2"], env=env)
-    if code != 0:
-        raise RuntimeError("Could not query outdated Homebrew casks.")
-    try:
-        casks = json.loads(output)["casks"]
-        if not isinstance(casks, list) or any(
-                not isinstance(cask, dict) or not isinstance(cask.get("name"), str)
-                or not cask["name"] or not isinstance(cask.get("pinned", False), bool)
-                for cask in casks):
-            raise ValueError("invalid cask metadata")
-        return [cask["name"] for cask in casks if not cask.get("pinned", False)]
-    except (ValueError, KeyError, TypeError) as error:
-        raise RuntimeError("Invalid outdated Homebrew cask metadata.") from error
-
-
-def _update(config, shell):
-    results = []
-
-    def component(name, outcome):
-        results.append((name, outcome))
-
-    def status(code):
-        if shell.check:
-            return "checked"
-        return "completed" if code == 0 else "failed"
-
-    steps = config["steps"]
-    inventory_files(config)
-    brew = _brew(config)
-    brew_env = dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1", HOMEBREW_NO_INSTALL_CLEANUP="1",
-                    HOMEBREW_NO_AUTOREMOVE="1")
-    if brew and (steps["cli"] or steps["gui"]):
-        component("Homebrew metadata", status(shell.run([brew, "update"])))
-        cleanup = []
-        excluded_cleanup = set()
-        cleanup_safe = True
-        unrestricted = steps["cli"] and steps["gui"]
-        cli_casks = {entry.name.rsplit("/", 1)[-1]
-                     for path in (Path(config["repo_dir"]) / "packages").rglob("*.toml")
-                     for entry in _parse(path, config["repo_dir"])
-                     if entry.kind in ("cli", "cli-optional") and entry.manager == "brew-cask"}
-        for flag, name, enabled in (("--formula", "Homebrew formulae", steps["cli"]),
-                                    ("--cask", "Homebrew casks",
-                                     config["platform"] == "mac" and (steps["cli"] or steps["gui"]))):
-            if not enabled:
-                component(name, "skipped")
-                if flag == "--formula" and config["platform"] == "mac":
-                    code, output = shell.query([brew, "list", flag], env=brew_env)
-                    cleanup_safe = code == 0
-                    excluded_cleanup.update(output.split())
-                continue
-            code, output = shell.query([brew, "list", flag], env=brew_env)
-            if code != 0:
-                component(name, "failed")
-                cleanup_safe = False
-                continue
-            installed = output.split()
-            if flag == "--cask":
-                excluded_cleanup.update(item for item in installed
-                                        if not steps["cli" if item in cli_casks else "gui"])
-                installed = [item for item in installed
-                             if steps["cli" if item in cli_casks else "gui"]]
-            cleanup.extend(installed)
-            if flag == "--cask" and not unrestricted:
-                try:
-                    eligible = _outdated_casks(shell, brew, brew_env)
-                except RuntimeError as error:
-                    print(error, flush=True)
-                    component(name, "failed")
-                    continue
-                # Named upgrades are implicitly greedy; let Homebrew's ordinary
-                # outdated query apply auto-update/latest and user greedy settings.
-                selected = set(installed)
-                eligible = [item for item in eligible if item in selected]
-                component(name, status(shell.run([brew, "upgrade", flag, *eligible], env=brew_env))
-                          if eligible else "skipped")
-            else:
-                # Bare upgrades skip pinned and unavailable packages normally.
-                component(name, status(shell.run([brew, "upgrade", flag], env=brew_env)))
-        # Named cleanup resolves both a formula and a cask with the same token.
-        # Leave ambiguous tokens alone rather than clean an excluded installation.
-        cleanup = [item for item in dict.fromkeys(cleanup) if item not in excluded_cleanup]
-        component("Homebrew cleanup",
-                  (status(shell.run([brew, "cleanup", "-s",
-                                     *([] if unrestricted else cleanup)], env=brew_env))
-                   if unrestricted or cleanup else "skipped") if cleanup_safe else "failed")
-    else:
-        for name in ("Homebrew metadata", "Homebrew formulae", "Homebrew casks", "Homebrew cleanup"):
-            component(name, "skipped")
-
-    tools = {}
-    node_ready = steps["node"]
-    try:
-        if steps["cli"] or steps["node"]:
-            tools = {key: value for key, value in _fragment_tools(config).items()
-                     if steps["node" if key in ("node", "pnpm") or key.startswith("npm:") else "cli"]}
-    except (RuntimeError, OSError) as error:
-        print(error, flush=True)
-        component("mise configuration", "failed")
-        node_ready = False
-    cli_tools = [key for key in tools if key not in ("node", "pnpm") and not key.startswith("npm:")]
-    component("mise tools",
-              status(shell.run([_mise(config), "upgrade", "--no-prune", *cli_tools]))
-              if cli_tools else "skipped")
-    if "node" in tools:
-        try:
-            value = tools["node"]
-            request = value.get("version") if isinstance(value, dict) else value
-            selector = _node_state(config).get("selector", request)
-            previous, legacy = _begin_node_transfer(config, shell, selector)
-            # install never rewrites the pinned fragment or prunes the source runtime.
-            if shell.run([_mise(config), "install", f"node@{selector}"]) != 0:
-                raise RuntimeError("Installing the updated Node runtime failed.")
-            version = _prepare_node(config, shell, f"node@{selector}", previous, legacy)
-            _commit_node_transfer(config, shell, selector, version, {})
-            _retire_brew_node(config, shell)
-            component("npm global transfer", status(0))
-        except (RuntimeError, OSError) as error:
-            print(error, flush=True)
-            component("npm global transfer", "failed")
-            node_ready = False
-    node_tools = [key for key in tools if key == "pnpm" or key.startswith("npm:")]
-    component("Node ecosystem tools",
-              status(shell.run([_mise(config), "upgrade", "--no-prune", *node_tools],
-                               env=dict(shell.env, **NO_AUTO_INSTALL)))
-              if node_ready and node_tools else "skipped")
-
-    pnpm_home = Path(config["pnpm_home"])
-    pnpm_env = dict(shell.env, PNPM_HOME=str(pnpm_home), **NO_AUTO_INSTALL,
-                    PATH=os.pathsep.join([str(pnpm_home / "bin"), str(pnpm_home), shell.env["PATH"]]))
-    for name, tool, command, env in (("npm globals", "node", ["npm", "update", "-g"],
-                                     dict(shell.env, **NO_AUTO_INSTALL)),
-                                    ("pnpm globals", "pnpm", ["pnpm", "update", "-g"], pnpm_env)):
-        if not node_ready:
-            component(name, "skipped")
-        elif tool in tools:
-            component(name, status(shell.run([_mise(config), "exec", "--", *command], env=env)))
-        elif shell.which(command[0]):
-            component(name, status(shell.run(command, env=env)))
-        else:
-            component(name, "skipped")
-
-    mas = shell.which("mas") if steps["app-store"] and config["platform"] == "mac" else None
-    component("Mac App Store", status(shell.run([mas, "upgrade"])) if mas else "skipped")
-    component("Ollama models", _update_ollama(shell, status) if steps["cli"] else "skipped")
-
-    print("Update summary:")
-    for name, outcome in results:
-        print(f"  {name}: {outcome}")
-    failed = [name for name, outcome in results if outcome == "failed"]
-    if failed:
-        message = f"Update failures: {', '.join(failed)}. See the errors above."
-        print(message, flush=True)
-        raise RuntimeError(message)
-
-
-def _update_ollama(shell, status):
-    ollama = shell.which("ollama")
-    if not ollama:
-        return "skipped"
-    code, output = shell.query([ollama, "list"])
-    if code != 0:
-        print("ollama list failed.", flush=True)
-        return "failed"
-    models = [line.split()[0] for line in output.splitlines()[1:] if line.strip()]
-    if not models:
-        return "skipped"
-    for model in models:
-        code = shell.run([ollama, "pull", model])
-        if code != 0:
-            return "failed"
-    return status(0)
+    return []

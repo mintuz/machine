@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
       if [[ "$argument" == --dotfiles ]]; then install_dotfiles=true; else install_dotfiles=false; fi
       ;;
     --config)
-      [[ $# -ge 2 && -n "$2" ]] || usage
+      [[ "$has_config" == false && $# -ge 2 && -n "$2" ]] || usage
       config_path="$2"
       case "$config_path" in /*) ;; *) config_path="$caller_dir/$config_path" ;; esac
       config_args+=(--config "$config_path")

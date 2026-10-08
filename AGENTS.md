@@ -3,8 +3,8 @@
 This repository configures ARM64 macOS and headless Ubuntu development
 machines. Both support personal and work profiles. Mise owns runtimes and the
 command interface. Homebrew owns native formulae and casks. Python standard-
-library helpers own configuration and privileged operations. Make, Ansible and
-nvm are no longer provisioning engines. Do not add a parallel legacy path.
+library helpers own configuration and privileged operations. Make and
+Ansible are no longer provisioning engines. Do not add a parallel legacy path.
 
 This is the shared maintenance guide for Codex and Claude Code. `CLAUDE.md`
 imports this file; keep project instructions here to avoid divergent copies.
@@ -22,9 +22,10 @@ contract.
 | `scripts/with-sudo-askpass.sh` | Sudo authorisation, password helper and cleanup |
 | `scripts/setup.py`, `scripts/devsetup/cli.py` | Direct CLI and setup ordering |
 | `scripts/devsetup/config.py`, `defaults.toml` | Configuration, OS/profile validation and per-platform defaults |
-| `packages/` | Layered TOML inventories; no installation logic |
-| `scripts/devsetup/software.py` | Homebrew/mas installation, mise runtimes and maintenance |
+| `packages/` | Literal Homebrew Bundle files and mise `[tools]` tables per layer; no installation logic |
+| `scripts/devsetup/software.py` | `brew bundle` installation, mise tool installation and the machine fragment |
 | `scripts/devsetup/host.py` | Prerequisites, Git, shell, external dotfiles, macOS preferences and Dock |
+| `scripts/update.sh` | Shell maintenance of installed Homebrew, mise, npm/pnpm, App Store and Ollama software |
 | `scripts/devsetup/security.py` | Managed SSH client configuration and Remote Login |
 | `templates/` | Managed SSH client/server templates |
 | `scripts/devsetup/global_gitignore` | Managed global Git ignore content |
@@ -49,28 +50,30 @@ to personal on each invocation and reject conflicting selections. The
 installer uses a positional profile and must reject an environment conflict
 before any installation. Pass the effective profile to its bootstrap helper.
 
-Load `defaults.toml`, then explicit repeatable `--config` files. Apply the
-selected `[mac]` or `[linux]` table within each file. Later files override
-earlier files; explicit feature flags override configuration. Keep platform
-paths in these tables and shared preferences outside them. Do not let local
-TOML files enable the private security command-injection seams used by tests.
+Load `defaults.toml`, then the single optional `--config` file. Apply the
+selected `[mac]` or `[linux]` table within each file after its shared keys.
+The override file replaces defaults; explicit feature flags override
+configuration. Keep platform paths in these tables and shared preferences
+outside them. Unknown keys pass through untouched. Do not let local TOML
+files enable the private security command-injection seams used by tests.
 Preserve the documented `remote_login_sshd` list and
 `remote_login_launchctl` executable overrides for isolated validation.
-Reject unknown settings in shared and platform tables, including inactive
-platforms. The canonical `[steps]` table contains `ssh`, `git`, `cli`,
-`remote-login`, `gui`, `zsh`, `app-store`, `osx`, `node`, `dotfiles` and
-`dock`. Merge it by key, not whole-table replacement. Other lists replace
-earlier values. The old root feature keys are removed, not aliases.
+The profile comes only from the command line or `DEVSETUP_PROFILE`, never
+from a settings file. The canonical `[steps]` table contains `ssh`, `git`,
+`cli`, `remote-login`, `gui`, `zsh`, `app-store`, `osx`, `node`, `dotfiles`
+and `dock`. Merge it by key, not whole-table replacement. Other lists
+replace earlier values. The old root feature keys are removed, not aliases.
 Repeatable `--skip STEP` overrides the selected policy for aggregate
-installation or maintenance. Direct component commands opt in explicitly
-and report when they override a saved exclusion; contradictory explicit
-flags fail. Bootstrap and preflight cannot be skipped. Revocation is a
-separate operation and must never be suppressed by a step exclusion.
+installation only. Direct component commands opt in explicitly and report
+when they override a saved exclusion; contradictory explicit flags fail.
+Bootstrap and preflight cannot be skipped. Revocation is a separate
+operation and must never be suppressed by a step exclusion.
 
-The installer forwards the same ordered `--config` files and component
-choices to Python, resolving relative paths from the original invocation
-directory. Keep TOML parsing in Python. On an unbootstrapped machine, TOML
-validation follows interpreter installation; do not promise zero bootstrap
+The installer forwards the same `--config` file and component choices to
+Python, resolving the relative path from the original invocation
+directory. A repeated `--config` is a usage error. Keep TOML parsing in
+Python. On an unbootstrapped machine, TOML validation follows interpreter
+installation; do not promise zero bootstrap
 changes for an invalid file. SSH client consent remains before bootstrap
 and takes precedence over file choices. The installer always disables
 Remote Login enablement for its run; access setup is a later explicit
@@ -129,7 +132,7 @@ repository before fetching or changing its revision. Compare local paths
 using Git's path interpretation; never silently rewrite a user's origin.
 
 The external shell activates mise and handles project Node version files.
-It must not require nvm or the Homebrew executable. Its `dotfiles.toml` fragment
+It must not require the Homebrew executable. Its `dotfiles.toml` fragment
 must coexist with this repository's `dev-machine-setup.toml` under a real
 `~/.config/mise/conf.d` directory. Honour `MISE_CONFIG_DIR` and
 `XDG_CONFIG_HOME`. Do not overwrite user mise settings or traverse external
@@ -161,92 +164,67 @@ command, propagate its exit status and remove temporary credential files.
 ## Package and runtime ownership
 
 Combine `shared/`, `shared/<profile>/`, `<mac|linux>/` and
-`<mac|linux>/<profile>/` in that order. Each layer may contain `cli.toml`,
-`cli-optional.toml`, `gui.toml`, `gui-optional.toml` and `app-store.toml`.
-Create a layer only when it contains packages. Reject unknown inventory paths;
-keep the shared required CLI inventory mandatory. Profiles are additive, not
-uninstall lists.
+`<mac|linux>/<profile>/` in that order. Each layer may contain
+`Brewfile.cli`, `Brewfile.gui`, `Brewfile.app-store`, `tools.cli.toml` and
+`tools.node.toml`; every file is optional. Brewfiles use plain Homebrew
+Bundle syntax. Setup concatenates the selected files of one kind in layer
+order and pipes them to `brew bundle install --file=-` with
+`HOMEBREW_NO_AUTO_UPDATE=1`. `tools.*.toml` files hold a mise `[tools]`
+table; setup merges them in layer order, runs `mise install name@version`
+and records the merged table in `~/.config/mise/conf.d/dev-machine-setup.toml`
+while keeping unrelated earlier entries. Create a layer only when it
+contains packages. Profiles are additive, not uninstall lists.
 
-Keep desktop apps under `packages/mac/`. Use `os = "macos"` for shared CLI
-casks and provide supported Linux tool declarations where needed. Homebrew
-handles native formulae and casks, including their post-install steps. The
-runner generates Brewfiles from TOML; do not maintain duplicate inventories.
-The native mise bottle installer did not create Git's certificate
-configuration in clean Ubuntu validation, so it is not the native package
-owner for this release. Use mise for runtimes and supported standalone CLI
-providers. Use apt only for Ubuntu bootstrap prerequisites and zsh.
-Generated Brewfiles must grant item-level `trusted: true` to selected,
-fully qualified Homebrew formulae and casks. Never trust their whole tap or
-disable Homebrew's trust policy. Preview commands must not modify the trust
-store. Maintenance must not grant blanket trust to installed taps or restore
-revoked permissions implicitly.
+Keep casks under `packages/mac/`. Declare a Linux provider for a CLI cask
+in `packages/linux/tools.cli.toml` where one exists. Homebrew handles
+native formulae and casks, including their post-install steps. Do not
+generate Brewfiles or maintain duplicate inventories. The native mise
+bottle installer did not create Git's certificate configuration in clean
+Ubuntu validation, so it is not the native package owner for this release.
+Use mise for runtimes and supported standalone CLI providers. Use apt only
+for Ubuntu bootstrap prerequisites and zsh. Rely on `brew bundle`
+semantics: it adopts apps already present in `/Applications`, upgrades
+outdated items and leaves self-updating casks alone unless an item says
+`greedy: true`. App Store apps use `mas "Name", id: N` lines with the Mac
+app's ID. A third-party formula or cask needs its `tap` line and
+item-level `trusted: true` on the fully qualified item. Never trust a
+whole tap or disable Homebrew's trust policy. Preview commands must not
+modify the trust store. Maintenance must not grant blanket trust to
+installed taps or restore revoked permissions implicitly.
 
-Required CLI failures stop setup. Optional CLI, GUI and App Store installation
-failures let later steps continue. Return them as issues from the step; the
-dispatcher lists them with advice at the end, also after a fatal error, and
-returns failure. Diagnose failures only from read-only queries; never repair
-Homebrew state or delete backups automatically. Preserve cask adoption
-and greedy upgrades where configured, but skip a greedy upgrade when every
-app of the cask reports a plain numeric version equal to or newer than the
-Homebrew version. Mac App Store installation requires
-sign-in; skip installed App Store apps and do not attempt IDs that the App
-Store lookup cannot find. Remove disabled `tldr` before installing its
-replacement `tlrc`. Remove the conflicting `claude-code@latest` cask before
-installing its replacement `claude-code` cask.
+The `cli` step owns `Brewfile.cli`, `tools.cli.toml` and fzf; a bundle or
+`mise install` failure stops setup. `gui` owns `Brewfile.gui` and
+`app-store` owns `Brewfile.app-store`; both are Mac-only, and `app-store`
+runs `mdimport /Applications` first so mas can see installed apps. Their
+failures let later steps continue: return one issue string from the step;
+the dispatcher lists the issues at the end, also after a fatal error, and
+returns failure. Never repair Homebrew state or delete backups
+automatically. Mac App Store installation requires sign-in. Remove disabled
+`tldr` before installing its replacement `tlrc`. Remove the conflicting
+`claude-code@latest` cask before installing its replacement `claude-code`
+cask.
 
-The `node` action solely owns Node, pnpm, all `npm:` mise providers,
-global-package migration and pnpm shell/global settings. `cli` owns
-remaining CLI inventories and fzf. Do not hide Node mutation in CLI
-installation, even when Node is excluded. Native prerequisites of selected
-components remain allowed; exclusions are not an uninstall/package-denial
-policy.
+The `node` step owns `tools.node.toml`: Node, pnpm and all `npm:` mise
+providers. It installs and records those tools, adds the `PNPM_HOME` shell
+block on Ubuntu through `host.ensure_block`, creates `pnpm_home/bin` and
+installs each `pnpm_global_packages` entry with
+`mise exec <specs> -- pnpm add -g <package>@latest`. A pnpm failure stops
+setup. Do not hide Node mutation in CLI installation, even when Node is
+excluded. Native prerequisites of selected components remain allowed;
+exclusions are not an uninstall/package-denial policy. Ensure child tools
+can find the configured mise executable, even with an absolute `--mise`
+path and a minimal `PATH`.
 
-Prove mise's Node executable works and save its default configuration before
-unlinking Homebrew Node. Transfer npm globals at their installed versions from
-the previous mise runtime, nvm's default and Homebrew Node. Read legacy
-providers only before the machine-owned fragment first declares Node; later
-runs must respect packages the user uninstalled. Existing target packages win.
-Report conflicting versions, linked/unreadable packages and other nvm versions
-rather than silently losing them. Honour an explicit npm prefix without
-rewriting `.npmrc`. A failed source-directory probe is an error, not an
-empty source. Before installing a target, preserve the original migration
-source and working concrete Node pin. The adjacent
-`dev-machine-setup.node.json` records the requested selector and pending
-source; retries must resume from it, including selector changes and
-already-installed targets. Commit the proven target pin atomically and
-recognise a completed commit if journal cleanup was interrupted, without
-replaying removed legacy globals. A transfer or configuration failure must
-retain the old provider and return failure. Reject a conflicting effective
-mise default before retiring Homebrew Node. Keep old runtimes; do not prune
-before preserving their globals. Ensure child tools can find the configured
-mise executable, even with an absolute `--mise` path and a minimal `PATH`.
-With automatic installation disabled, `mise exec` can still find an unrelated
-Node on `PATH`. Accept a source or target only when its executable matches
-successful `mise ls --installed --json node` metadata. Preserve the registered
-install path when matching symlinks; do not derive a pin from an external
-executable's directory name. If a pending source no longer exists, stop before
-changing the journal or pin and require restoration of that source.
-
-By default, `mise run update` maintains all installed Homebrew
-formulae/casks regardless of profile, machine-fragment mise tools, npm/pnpm
-globals, Mac App Store apps and Ollama models. Apply the same typed
-component policy: `cli` owns formulae, CLI casks, non-Node mise tools and
-Ollama; `gui` owns other installed casks; `node` owns Node/npm/pnpm;
-`app-store` owns mas maintenance. Classify CLI casks across all inventory
-layers, not only the current profile. Match fully qualified cask declarations
-to Homebrew's installed short tokens. Scope cleanup to included packages.
-Homebrew can still upgrade dependencies of included packages.
-Preserve Homebrew's bulk upgrade semantics for formulae and unfiltered
-casks. For filtered casks, select non-pinned entries from non-greedy outdated
-JSON; naming every installed cask would make each upgrade greedy and turn
-pinned or unavailable packages into failures. Do not add automatic cleanup
-or autoremove across excluded categories. A shared formula/cask token
-cannot be cleaned selectively and must be excluded from filtered cleanup.
-Use `mise upgrade --no-prune` for other managed tools; install a requested
-Node target without moving the working pin until migration succeeds.
-Continue independent maintenance components after errors, then return
-failure if any component failed. A missing tool is skipped, not reported
-as updated. Do not introduce Ubuntu system upgrades.
+`mise run update` runs `scripts/update.sh`, a Bash script without Python
+or the sudo wrapper. It maintains all installed software regardless of
+profile or step settings; `--skip` and `--config` do not apply. In order:
+`brew update`, `brew upgrade` with Homebrew's default non-greedy semantics,
+`brew cleanup -s`, `mise upgrade --no-prune`, `npm update -g` and
+`pnpm update -g` through `mise exec`, `mas upgrade` on macOS and
+`ollama pull` for each listed model. Skip a component whose tool is absent
+and print why; pnpm also needs `PNPM_HOME`. Continue after a failed
+component, print a summary with one line per component and return failure
+if any component failed. Do not introduce Ubuntu system upgrades.
 
 ## Remote Login safety contract
 
@@ -337,9 +315,10 @@ and incident steps remain manual.
 
 ## Making and validating changes
 
-Add software to TOML inventories, not Python package lists. Put behaviour in
-the responsible domain module and keep the CLI dispatcher explicit. Keep
-Mac-only commands behind platform guards. Update this guide and README when
+Add software to the layer Brewfiles and `tools.*.toml` files, not Python
+package lists. Put behaviour in the responsible domain module and keep the
+CLI dispatcher explicit. Keep Mac-only commands behind platform guards.
+Update this guide and README when
 commands or ownership change. Do not add compatibility aliases for removed
 Make targets or Ansible tags.
 
@@ -348,7 +327,8 @@ After code or inventory changes, run `mise run check`, or
 Homebrew `bats-core` is required in both Mac profiles. On Ubuntu or before
 Mac CLI installation, install that test dependency explicitly. Missing
 Bats must fail the full check command, not silently omit shell coverage.
-Use `mise run check-shell` or `bats tests/shell` for the shell suite alone.
+Use `mise run check-shell` or `bats tests/shell` for the shell suite alone;
+`tests/shell/update.bats` covers `scripts/update.sh` with fake executables.
 Keep those tests focused on public outcomes: state preservation, refused
 operations, exit status and credential cleanup. Reuse the isolated sandbox
 and substitute privileged commands; do not assert source text, exact
@@ -356,9 +336,9 @@ internal command sequences or copied argument echoes. Move overlapping
 shell cases out of the Python checks instead of maintaining duplicate tests.
 
 Checks use temporary directories and substitute commands. They cover the four OS/profile pairs,
-terminal prompts, opt-ins, configuration precedence, inventory errors,
-headless sudo, backups, revision safety, runtime/global-package migration and
-failure propagation. On macOS they also run real unprivileged `sshd -T` gates.
+terminal prompts, opt-ins, configuration precedence, malformed tools files,
+headless sudo, backups, revision safety, fragment safety and failure
+propagation. On macOS they also run real unprivileged `sshd -T` gates.
 Stateful service substitutes cover stop-before-write, rollback, offline final-
 key revocation and partial activation failures without changing host services.
 Inspect real selection with `mise run packages --profile personal` and
