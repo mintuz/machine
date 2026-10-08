@@ -10,8 +10,16 @@ not_found_auto_install = false
 task.run_auto_install = false
 
 [tools]
-# Runs the stdlib-only helpers in scripts/devsetup.
+# Runs the stdlib-only helpers in scripts/devsetup. Every other tool is
+# declared in mise/conf.d/tools.toml.
 python = "3.14.8"
+
+# One symlink makes mise/conf.d/tools.toml part of the global mise
+# configuration, next to the dotfiles repository's dotfiles.toml. `mise run cli`
+# applies this entry with `mise dot apply`; mise refuses to replace an existing
+# regular file at the target.
+[dotfiles]
+"~/.config/mise/conf.d/dev-machine-setup.toml" = { source = "mise/conf.d/tools.toml", mode = "symlink" }
 
 # Pass options after the task name, for example `mise run cli --profile work`.
 # `setup` and `bootstrap-only` accept the install.sh arguments.
@@ -37,7 +45,7 @@ run = 'python scripts/setup.py packages --mise "{{ mise_bin }}"'
 raw = true
 
 [tasks.cli]
-description = "Install native/non-Node CLI tools and fzf shell integration"
+description = "Install native CLI tools, every mise tool and fzf shell integration"
 run = 'scripts/with-sudo-askpass.sh python scripts/setup.py cli --mise "{{ mise_bin }}"'
 raw = true
 
@@ -77,7 +85,7 @@ run = 'scripts/with-sudo-askpass.sh python scripts/setup.py zsh --mise "{{ mise_
 raw = true
 
 [tasks.node]
-description = "Install Node, pnpm and npm-backed tools with mise, then pnpm globals"
+description = "Add the Ubuntu PNPM_HOME shell block"
 run = 'scripts/with-sudo-askpass.sh python scripts/setup.py node --mise "{{ mise_bin }}"'
 raw = true
 

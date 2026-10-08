@@ -6,7 +6,7 @@ commands to install software, configure your environment and keep it updated.
 
 The repository aims to:
 
-- Provide repeatable setup with Brewfiles and tool lists you can review and customise.
+- Provide repeatable setup with Brewfiles and a mise tools file you can review and customise.
 - Let you run the full setup or select individual components.
 - Keep SSH client changes and Mac Remote Login opt-in.
 - Preserve local dotfiles work and your own mise settings.
@@ -42,9 +42,11 @@ shell configuration.
 
 **Review the defaults before full setup.** This repository contains the
 owner's Git name, email address, public-key filenames, dotfiles source,
-macOS preferences and Dock layout. Read [defaults.toml](defaults.toml) and
-[the package inventories](packages/). Use [local settings](#configure-your-machine)
-to supply your own values or exclude components you do not want.
+macOS preferences and Dock layout. Read [defaults.toml](defaults.toml),
+[the package inventories](packages/) and
+[mise/conf.d/tools.toml](mise/conf.d/tools.toml). Use
+[local settings](#configure-your-machine) to supply your own values or
+exclude components you do not want.
 
 ## Set up a machine
 
@@ -129,8 +131,8 @@ defaults, supplied configuration files and explicit flags.
 | `mise run bootstrap-only` | Run bootstrap without full setup. |
 | `mise run packages --profile work` | Show selected packages without installing them. |
 | `mise run install --profile work` | Run full setup without bootstrap or feature prompts. |
-| `mise run cli` | Install native and non-Node command-line tools, plus fzf integration. |
-| `mise run node` | Install Node, pnpm and npm-backed tools with mise, then pnpm globals. |
+| `mise run cli` | Install native command-line tools, every mise tool and fzf integration. |
+| `mise run node` | Add the `PNPM_HOME` shell block on Ubuntu. |
 | `mise run gui` | Install or upgrade Mac desktop apps. |
 | `mise run app-store` | Install Mac App Store apps; requires sign-in. |
 | `mise run git` | Install Git and apply global Git settings. |
@@ -289,8 +291,9 @@ native prerequisites. For example, skipping Git configuration does not
 exclude the Git executable needed for dotfiles. Homebrew dependencies and
 the external dotfiles installer can have their own effects.
 
-The `cli` step includes fzf, but not Node. The separate `node` step owns
-Node, pnpm, all `npm:` mise providers and pnpm global packages.
+The `cli` step installs every mise tool, including Node, pnpm and the
+`npm:` providers, and adds fzf. The `node` step only adds the Ubuntu
+`PNPM_HOME` shell block, so `--skip node` does not exclude Node.
 Tailscale is a Mac GUI package, not an App Store package. Its sign-in and
 required macOS extension approval remain manual.
 
@@ -371,12 +374,16 @@ exec zsh -l
 
 ### Understand shell and runtime settings
 
-The machine's runtime settings live in
-`~/.config/mise/conf.d/dev-machine-setup.toml`. Compatible dotfiles use an
-adjacent `dotfiles.toml` fragment. Setup honours `MISE_CONFIG_DIR` and
-`XDG_CONFIG_HOME`; it preserves user mise settings and refuses to write
-through externally symlinked configuration directories. Tools selected by
-another profile remain in the machine-managed fragment.
+The tools this repository installs with mise are declared in
+`mise/conf.d/tools.toml`. The `cli` step links that file to
+`~/.config/mise/conf.d/dev-machine-setup.toml` with `mise dot apply`, so
+the tools are active in every directory. Compatible dotfiles use an adjacent
+`dotfiles.toml` file. mise refuses to replace an existing regular file at
+the link target and leaves your other mise files alone. The link always
+goes to `~/.config/mise/conf.d`; a custom `MISE_CONFIG_DIR` or
+`XDG_CONFIG_HOME` is not followed. If an earlier version of this repository
+wrote a regular `dev-machine-setup.toml` there, remove that file once before
+running setup again.
 
 Compatible dotfiles should support project `.node-version` files and
 preserve a custom `PNPM_HOME`. When dotfiles are disabled, bootstrap
@@ -385,21 +392,18 @@ add their own shell integration. Setup does not edit symlinked shell files
 owned by another repository; those files must activate mise and source
 fzf themselves.
 
-### Install the Node ecosystem
+### Add the pnpm shell block on Ubuntu
 
-Run the `node` task to install the Node ecosystem independently:
+Run the `node` task to add the `PNPM_HOME` block independently:
 
 ```bash
 mise run node --profile personal --config "$HOME/.config/dev-machine-setup.toml"
 ```
 
-Setup installs the tools listed in the selected `tools.node.toml` files,
-by default Node, pnpm and npm-backed tools, with `mise install`. It records
-them in the machine fragment, keeping your other mise settings. On Ubuntu
-it adds a `PNPM_HOME` block to `.bashrc` and `.zshrc`. It then creates the
-configured `pnpm_home` and installs each `pnpm_global_packages` entry at
-its latest version with `pnpm add -g`. A failed installation stops the
-step; correct the reported cause and rerun the same command.
+On Ubuntu it adds a `PNPM_HOME` block to `.bashrc` and `.zshrc` that points
+at the configured `pnpm_home`. On macOS it does nothing; your dotfiles set
+`PNPM_HOME` there. Node, pnpm and npm-backed tools are installed by the
+`cli` step with the other mise tools.
 
 ## Update installed software
 
@@ -434,9 +438,9 @@ Each run combines four additive layers in order:
 3. `packages/<mac|linux>/`
 4. `packages/<mac|linux>/<personal|work>/`
 
-Each layer can contain `Brewfile.cli`, `Brewfile.gui`, `Brewfile.app-store`,
-`tools.cli.toml` and `tools.node.toml`. Every file is optional; create only
-the layers you need. A malformed tools file stops setup and names the file.
+Each layer can contain `Brewfile.cli`, `Brewfile.gui` and
+`Brewfile.app-store`. Every file is optional; create only the layers you
+need.
 
 Brewfiles use plain [Homebrew Bundle](https://docs.brew.sh/Brew-Bundle-and-Brewfile)
 syntax. Setup concatenates the selected files of one kind in layer order and
@@ -456,20 +460,18 @@ cask "claude-code", greedy: true
 mas "Things", id: 904280696
 ```
 
-Tools files hold a mise `[tools]` table. Setup merges the selected files in
-layer order, installs the tools with `mise install` and records them in
-`~/.config/mise/conf.d/dev-machine-setup.toml`. Node, pnpm and `npm:`
-providers belong in `tools.node.toml`; give a CLI cask a Linux provider in
-`packages/linux/tools.cli.toml` where one exists:
+mise tools are declared once, in `mise/conf.d/tools.toml`, with an `os`
+list on entries for one platform. The `cli` step installs them with
+`mise install` after linking the file into your global mise configuration.
+Give a CLI cask a Linux provider with `os = ["linux"]` where one exists.
+A tool for one profile only belongs in `mise.personal.toml` or
+`mise.work.toml`:
 
 ```toml
-# packages/shared/tools.cli.toml
+# mise/conf.d/tools.toml
 [tools]
 go = "latest"
-
-# packages/linux/tools.cli.toml
-[tools]
-"aqua:anthropics/claude-code" = "latest"
+"aqua:anthropics/claude-code" = { version = "latest", os = ["linux"] }
 ```
 
 Before installing a changed selection, inspect it:
@@ -893,7 +895,7 @@ shell suite.
 | A local setting is ignored | Pass its file with `--config` on every relevant command. Check its platform tables. |
 | Dotfiles update refused | Save local work, resolve divergent history, or correct the configured repository. Do not discard work to bypass the check. |
 | Shell still runs old hooks | Start a fresh login shell with `exec zsh -l`. Sourcing `.zshrc` does not remove previously registered hooks. |
-| Node installation failed | Correct the reported mise or pnpm error, then rerun `mise run node` with the same configuration. |
+| mise tool installation failed | Correct the reported mise error, then rerun `mise run cli` with the same configuration. If the link target already exists as a regular file, remove it first. |
 | Package or App Store installation failed | Read the reported step output, for example sign in to the App Store or review a Homebrew error. Then retry the affected component. |
 | Remote Login refuses a session or fails its checks | Use a fresh local Mac terminal and follow the remote access guide. Never bypass a failed run by enabling SSH manually. |
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Check package previews, Homebrew Bundle installs, mise tools and pnpm globals with fake tools.
+"""Check package previews, Homebrew Bundle installs and the mise tool step with fake tools.
 
 Nothing is installed: mise, Homebrew and mdimport are replaced by logging
-stand-ins in temporary directories, and the mise fragment lives in a temporary home.
+stand-ins in temporary directories, and shell files live in a temporary home.
 """
 import contextlib
 import io
@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-import tomllib
 from unittest import mock
 
 root = Path(__file__).resolve().parents[1]
@@ -34,22 +33,20 @@ BREW_PRE = """if [ "$1" = bundle ]; then
   line="$line${HOMEBREW_NO_AUTO_UPDATE:+ [no auto-update]}: $(sed 's/$/;/' | tr '\\n' ' ')"
 fi
 if [ "$1" = list ]; then printf '%s\\n' "$line" >> "$FAKE_LOG"; [ -n "$FAKE_CASK_INSTALLED" ]; exit $?; fi"""
+# mise ls prints a stand-in listing so the preview shows what the real command returns.
+MISE_PRE = """if [ "$3" = ls ]; then echo "deno  latest"; fi"""
 
 FIXTURE = {
     "shared/Brewfile.cli": 'brew "git"\n',
-    "shared/tools.cli.toml": '[tools]\nuv = "latest"\nripgrep = "14"\n',
-    "shared/tools.node.toml": '[tools]\nnode = "24"\npnpm = "latest"\n',
     "mac/Brewfile.cli": 'brew "mas"\n',
     "mac/Brewfile.gui": 'cask "firefox"\n',
     "mac/Brewfile.app-store": 'mas "Xcode", id: 497799835\n',
-    "mac/tools.cli.toml": '[tools]\nripgrep = "15"\n',
     "mac/personal/Brewfile.cli": 'brew "ollama"\n',
     "mac/personal/Brewfile.gui": 'cask "steam"\n',
     "mac/work/Brewfile.cli": 'brew "awscli"\n',
-    "linux/tools.cli.toml": '[tools]\nfzf = "latest"\n',
-    "linux/tools.node.toml": '[tools]\nnode = "22"\n',
     "linux/personal/Brewfile.cli": 'brew "htop"\n',
 }
+LINK = "mise -E personal dot apply --yes ~/.config/mise/conf.d/dev-machine-setup.toml"
 
 
 def write(path, text):
@@ -84,22 +81,20 @@ class Machine:
         self.prefix = self.base / "prefix"
         self.bin = self.base / "bin"
         self.log = write(self.base / "log", "")
-        fake(self.bin / "mise", "mise")
+        fake(self.bin / "mise", "mise", pre=MISE_PRE)
         fake(self.bin / "mdimport", "mdimport")
         fake(self.prefix / "bin/brew", "brew", pre=BREW_PRE)
-        self.fragment = self.home / ".config/mise/conf.d/dev-machine-setup.toml"
         self.config = {
             "platform": platform, "profile": profile, "repo_dir": str(repo), "home": str(self.home),
             "mise": str(self.bin / "mise"), "brew": str(self.prefix / "bin/brew"),
             "brew_prefix": str(self.prefix), "pnpm_home": str(self.home / "pnpm"),
-            "pnpm_global_packages": [], "steps": {name: True for name in STEPS},
+            "steps": {name: True for name in STEPS},
         }
         self.env = {"PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin", "FAKE_LOG": str(self.log),
-                    "FAKE_FAIL": "", "MISE_CONFIG_DIR": str(self.home / ".config/mise")}
+                    "FAKE_FAIL": ""}
 
     def run(self, action, check=False, **env):
         saved = dict(os.environ)
-        os.environ.pop("XDG_CONFIG_HOME", None)
         os.environ.update(self.env, **env)
         output = io.StringIO()
         try:
@@ -112,9 +107,6 @@ class Machine:
 
     def calls(self):
         return self.log.read_text().splitlines()
-
-    def tools(self):
-        return tomllib.loads(self.fragment.read_text())["tools"]
 
 
 def fails(function, text):
@@ -143,14 +135,10 @@ with tempfile.TemporaryDirectory() as fixture_dir:
     # packages preview ------------------------------------------------------
     expected = {
         ("mac", "personal"): ["shared/Brewfile.cli", "mac/Brewfile.cli", "mac/personal/Brewfile.cli",
-                              "mac/Brewfile.gui", "mac/personal/Brewfile.gui", "mac/Brewfile.app-store",
-                              "shared/tools.cli.toml", "mac/tools.cli.toml", "shared/tools.node.toml"],
+                              "mac/Brewfile.gui", "mac/personal/Brewfile.gui", "mac/Brewfile.app-store"],
         ("mac", "work"): ["shared/Brewfile.cli", "mac/Brewfile.cli", "mac/work/Brewfile.cli",
-                          "mac/Brewfile.gui", "mac/Brewfile.app-store",
-                          "shared/tools.cli.toml", "mac/tools.cli.toml", "shared/tools.node.toml"],
-        ("linux", "personal"): ["shared/Brewfile.cli", "linux/personal/Brewfile.cli",
-                                "shared/tools.cli.toml", "linux/tools.cli.toml",
-                                "shared/tools.node.toml", "linux/tools.node.toml"],
+                          "mac/Brewfile.gui", "mac/Brewfile.app-store"],
+        ("linux", "personal"): ["shared/Brewfile.cli", "linux/personal/Brewfile.cli"],
     }
     for (platform, profile), files in expected.items():
         with tempfile.TemporaryDirectory() as directory:
@@ -169,24 +157,31 @@ with tempfile.TemporaryDirectory() as fixture_dir:
             assert [item.split(" ")[0] for item in listed] == [f"packages/{name}" for name in files], listed
             for item in listed:
                 assert item.endswith("(skipped by configuration)") == ("Brewfile.gui" in item), item
-            assert "uv@latest ripgrep@15" in output or platform == "linux", output
+            assert "mise tools from mise/conf.d/tools.toml" in output and "deno  latest" in output, output
             assert all(path.is_relative_to(repo / "packages") for path in seen), seen
-            assert machine.calls() == [] and not machine.fragment.exists()
+            assert machine.calls() == [f"mise -E {profile} ls --current"], machine.calls()
+    with tempfile.TemporaryDirectory() as directory:
+        machine = Machine(directory, repo)
+        fails(lambda: machine.run("packages", FAKE_FAIL="ls --current"), "could not list the declared tools")
     print("PASS: packages preview lists the selected layer files in order, marks disabled steps, "
-          "and reads only packages/")
+          "reads only packages/ and lists the mise tools")
 
     # cli --------------------------------------------------------------------
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo)
-        write(machine.fragment, '[tools]\npython = "3.12"\n')
         output = machine.run("cli")
         bundle = bundle_call(machine)
         assert "[no auto-update]" in bundle, bundle
         ordered(bundle, 'brew "git"', 'brew "mas"', 'brew "ollama"')
-        assert "mise install uv@latest ripgrep@15" in machine.calls(), machine.calls()
-        assert machine.tools() == {"python": "3.12", "uv": "latest", "ripgrep": "15"}, machine.tools()
-        assert "brew uninstall" not in "".join(machine.calls()), machine.calls()
+        calls = machine.calls()
+        assert calls[-2:] == [LINK, "mise -E personal install"], calls
+        assert "brew uninstall" not in "".join(calls), calls
         assert machine.issues == []
+
+    with tempfile.TemporaryDirectory() as directory:
+        machine = Machine(directory, repo, "linux", "work")
+        machine.run("cli")
+        assert machine.calls()[-2:] == [LINK.replace("personal", "work"), "mise -E work install"], machine.calls()
 
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo)
@@ -200,15 +195,18 @@ with tempfile.TemporaryDirectory() as fixture_dir:
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo)
         fails(lambda: machine.run("cli", FAKE_FAIL="brew bundle"), "CLI packages failed")
-        assert not any(call.startswith("mise install") for call in machine.calls()), machine.calls()
-        assert not machine.fragment.exists()
+        assert not any(call.startswith("mise") for call in machine.calls()), machine.calls()
 
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo)
-        fails(lambda: machine.run("cli", FAKE_FAIL="mise install"), "mise tools failed to install")
-        assert not machine.fragment.exists()
-    print("PASS: cli pipes the layered Brewfile.cli to brew bundle, installs and records merged tools, "
-          "removes replaced packages first, and records nothing after a failure")
+        fails(lambda: machine.run("cli", FAKE_FAIL="dot apply"), "Could not link")
+        assert not any(call.endswith(" install") for call in machine.calls()), machine.calls()
+
+    with tempfile.TemporaryDirectory() as directory:
+        machine = Machine(directory, repo)
+        fails(lambda: machine.run("cli", FAKE_FAIL="personal install"), "mise tools failed to install")
+    print("PASS: cli pipes the layered Brewfile.cli to brew bundle, removes replaced packages first, "
+          "links the tools file for the profile, then installs the tools, and stops on any failure")
 
     # gui and app-store --------------------------------------------------------
     with tempfile.TemporaryDirectory() as directory:
@@ -231,89 +229,36 @@ with tempfile.TemporaryDirectory() as fixture_dir:
         calls = machine.calls()
         assert calls[0] == "mdimport /Applications" and calls[1].startswith("brew bundle install"), calls
         assert 'mas "Xcode", id: 497799835' in calls[1], calls
-        assert not machine.fragment.exists()
     print("PASS: gui and app-store skip on Linux, index /Applications before mas, "
           "and report bundle failures as one issue")
 
     # node ---------------------------------------------------------------------
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo)
-        machine.config["pnpm_global_packages"] = ["foo", "bar"]
-        machine.run("node")
-        calls = machine.calls()
-        assert calls == ["mise install node@24 pnpm@latest",
-                         "mise exec node@24 pnpm@latest -- pnpm add -g foo@latest",
-                         "mise exec node@24 pnpm@latest -- pnpm add -g bar@latest"], calls
-        assert machine.tools() == {"node": "24", "pnpm": "latest"}, machine.tools()
-        assert (machine.home / "pnpm/bin").is_dir()
-        assert not (machine.home / ".zshrc").exists() and not (machine.home / ".bashrc").exists()
+        before = snapshot(machine.home)
+        assert "nothing to configure on macOS" in machine.run("node")
+        assert machine.calls() == [] and snapshot(machine.home) == before
 
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo, "linux")
-        machine.config["pnpm_global_packages"] = ["foo"]
         external = write(machine.base / "dotfiles/zshrc", "# external\n")
         (machine.home / ".zshrc").symlink_to(external)
         machine.run("node")
-        assert "mise install node@22 pnpm@latest" in machine.calls(), machine.calls()
         bashrc = (machine.home / ".bashrc").read_text()
         assert f"export PNPM_HOME={machine.home / 'pnpm'}" in bashrc and "# BEGIN dev-machine Node and pnpm" in bashrc
         assert external.read_text() == "# external\n"
-        assert machine.tools() == {"node": "22", "pnpm": "latest"}, machine.tools()
-        fails(lambda: machine.run("node", FAKE_FAIL="pnpm add"), "pnpm global package foo failed")
-    print("PASS: node installs and records tools.node.toml, adds the PNPM_HOME block on Linux only, "
-          "never edits a symlinked shell file, and fails on a pnpm error")
+        assert machine.calls() == []
+    print("PASS: node adds the PNPM_HOME block on Linux only, never edits a symlinked shell file, "
+          "and runs no commands")
 
-    # fragment safety ------------------------------------------------------------
+    # check mode ----------------------------------------------------------------
     with tempfile.TemporaryDirectory() as directory:
         machine = Machine(directory, repo)
         before = snapshot(machine.home)
         output = machine.run("cli", check=True)
         assert "$ " in output and "brew bundle install --file=-" in output and "(check: not run)" in output
-        assert "Recording mise tools" in output and "(check: not written)" in output, output
+        assert ("dot apply --yes '~/.config/mise/conf.d/dev-machine-setup.toml'" in output
+                and "mise -E personal install" in output), output
         assert machine.calls() == ["brew list --cask --versions claude-code@latest"], machine.calls()
         assert snapshot(machine.home) == before
-
-    for name in ("config", "mise"):
-        with tempfile.TemporaryDirectory() as directory:
-            machine = Machine(directory, repo)
-            target = machine.base / "elsewhere"
-            if name == "config":
-                target.mkdir()
-                (machine.home / ".config").symlink_to(target)
-            else:
-                (target / "mise").mkdir(parents=True)
-                (machine.home / ".config").mkdir()
-                (machine.home / ".config/mise").symlink_to(target / "mise")
-            fails(lambda: machine.run("node"), "Refusing to access the mise runtime fragment through symlink")
-            assert list(target.rglob("*.toml")) == []
-
-    with tempfile.TemporaryDirectory() as directory:
-        machine = Machine(directory, repo)
-        real = machine.base / "real"
-        real.mkdir()
-        link = machine.base / "link"
-        link.symlink_to(real)
-        fails(lambda: machine.run("node", MISE_CONFIG_DIR="", XDG_CONFIG_HOME=str(link / "xdg")),
-              "Refusing to access the mise runtime fragment through symlink")
-        fails(lambda: machine.run("node", MISE_CONFIG_DIR=str(link / "mise")),
-              "Refusing to access the mise runtime fragment through symlink")
-        assert list(real.rglob("*.toml")) == []
-
-    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
-        machine = Machine(directory, repo)
-        alias = Path("/tmp") / Path(directory).name / "mise"
-        machine.run("node", MISE_CONFIG_DIR=str(alias))
-        assert tomllib.loads((alias / "conf.d/dev-machine-setup.toml").read_text())["tools"] == {
-            "node": "24", "pnpm": "latest"}
-    print("PASS: the fragment refuses symlinked ancestors, accepts the /tmp alias, "
-          "and --check prints commands without writing")
-
-# malformed inventories ---------------------------------------------------------
-with tempfile.TemporaryDirectory() as directory:
-    repo = fixture_repo(directory, {**FIXTURE, "shared/tools.cli.toml": "[tools\nbroken\n"})
-    base = Path(directory) / "machine"
-    base.mkdir()
-    machine = Machine(base, repo)
-    fails(lambda: machine.run("cli"), "Malformed tool inventory packages/shared/tools.cli.toml")
-    assert not any(call.startswith("mise install") for call in machine.calls())
-print("PASS: a malformed tools.*.toml names the file and installs nothing")
+    print("PASS: --check prints the bundle, link and install commands without running them")

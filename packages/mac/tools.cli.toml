@@ -1,5 +1,0 @@
-# macOS mise tools for both profiles.
-
-[tools]
-# Use the published release without trusting a third-party Homebrew formula.
-"aqua:XcodesOrg/xcodes" = "latest"

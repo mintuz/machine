@@ -17,8 +17,6 @@ work_public_ssh_key = "work_github.pub"
 remote_login_public_keys = []
 remote_login_sources = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 
-pnpm_global_packages = []
-
 # Per-run choices. install.sh prompts or flags override them for one run;
 # nothing is persisted.
 revoke_remote_login = false

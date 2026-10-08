@@ -18,7 +18,7 @@ def main() -> int:
         return 1
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
            "DEVSETUP_TEST_PYTHON": sys.executable}
-    manifests = sorted(root.glob("*.toml")) + sorted((root / "packages").rglob("*.toml"))
+    manifests = sorted(root.glob("*.toml")) + sorted((root / "mise").rglob("*.toml"))
     for path in manifests:
         try:
             with path.open("rb") as source:

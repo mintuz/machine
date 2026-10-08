@@ -1,38 +1,31 @@
-"""Package inventories, Homebrew installation, mise tools and the Node ecosystem.
+"""Package inventories, Homebrew installation and the mise tool installation.
 
-Inventories live in packages/<layer>/. Layers apply in order: shared,
-shared/<profile>, <platform>, <platform>/<profile>. Each layer may contain:
-
-  Brewfile.cli, Brewfile.gui, Brewfile.app-store   Homebrew Bundle syntax
-  tools.cli.toml, tools.node.toml                  a mise [tools] table
-
+Brewfiles live in packages/<layer>/. Layers apply in order: shared,
+shared/<profile>, <platform>, <platform>/<profile>. Each layer may contain
+Brewfile.cli, Brewfile.gui and Brewfile.app-store in Homebrew Bundle syntax.
 The Brewfiles of one kind are concatenated in layer order and piped to
-`brew bundle install`. Tool tables are merged in layer order into the
-machine-owned global mise fragment, conf.d/dev-machine-setup.toml, so they
-work outside this checkout without replacing the user's own mise configuration.
+`brew bundle install`.
+
+mise tools are declared once in mise/conf.d/tools.toml with `os` selectors.
+The [dotfiles] entry in mise.toml links that file into the global mise
+configuration so the tools work outside this checkout; `mise install` then
+installs the selection for this platform and profile.
 """
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import shlex
 import shutil
 import subprocess
-import tempfile
-import tomllib
 
 from .host import ensure_block
 
 BREWFILES = {"cli": "Brewfile.cli", "gui": "Brewfile.gui", "app-store": "Brewfile.app-store"}
-TOOL_FILES = {"cli": "tools.cli.toml", "node": "tools.node.toml"}
 MAC_ONLY = ("gui", "app-store")
 BREW_PREFIX = {"mac": "/opt/homebrew", "linux": "/home/linuxbrew/.linuxbrew"}
-FRAGMENT_NAME = "dev-machine-setup.toml"
-FRAGMENT_HEADER = """\
-# Managed by mac-dev-machine-setup. Setup adds tools here and never removes
-# them. Keep your own mise settings in config.toml or another conf.d file.
-"""
+# The [dotfiles] target in mise.toml; mise expands ~ itself.
+GLOBAL_TOOLS_FILE = "~/.config/mise/conf.d/dev-machine-setup.toml"
 SHELL_BLOCK = "dev-machine Node and pnpm"
 
 
@@ -112,30 +105,6 @@ def brewfile(config, kind):
     return "\n".join(parts)
 
 
-def tools(config, kind):
-    """The selected mise [tools] tables of one kind, merged in layer order."""
-    repo = Path(config["repo_dir"])
-    merged = {}
-    for path in layer_files(config, TOOL_FILES[kind]):
-        relative = path.relative_to(repo).as_posix()
-        try:
-            table = tomllib.loads(path.read_text()).get("tools", {})
-        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
-            raise RuntimeError(f"Malformed tool inventory {relative}: {error}") from error
-        if not isinstance(table, dict):
-            raise RuntimeError(f"Malformed tool inventory {relative}: [tools] must be a table")
-        merged.update(table)
-    return merged
-
-
-def _specs(tools):
-    specs = []
-    for name, value in tools.items():
-        version = value.get("version", "latest") if isinstance(value, dict) else value
-        specs.append(f"{name}@{version}")
-    return specs
-
-
 # Paths and helpers
 
 def brew_prefix(config):
@@ -156,86 +125,20 @@ def _require_brew(config):
     return brew
 
 
-def fragment_path(config):
-    base = os.environ.get("MISE_CONFIG_DIR")
-    if not base:
-        xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(config["home"], ".config")
-        base = os.path.join(xdg, "mise")
-    return Path(base) / "conf.d" / FRAGMENT_NAME
-
-
-def _guard_fragment_path(path):
-    # /var and /tmp are system aliases on macOS, not externally managed config.
-    aliases = {Path("/var"): Path("/private/var"), Path("/tmp"): Path("/private/tmp")}
-    for part in (*reversed(path.absolute().parents), path.absolute()):
-        if part.is_symlink() and not (part in aliases and part.resolve() == aliases[part]):
-            raise RuntimeError(f"Refusing to access the mise runtime fragment through symlink {part}; "
-                               "it may belong to another repository.")
-
-
-def _fragment_tools(config):
-    path = fragment_path(config)
-    _guard_fragment_path(path)
-    if not path.exists():
-        return {}
-    try:
-        tools = tomllib.loads(path.read_text()).get("tools", {})
-    except tomllib.TOMLDecodeError as error:
-        raise RuntimeError(f"Cannot read the mise runtime fragment {path}: {error}") from error
-    if not isinstance(tools, dict):
-        raise RuntimeError(f"Cannot read the mise runtime fragment {path}: [tools] is not a table")
-    return tools
-
-
-def _toml_value(value, path):
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, dict) and all(isinstance(item, (str, bool)) for item in value.values()):
-        pairs = ", ".join(f"{json.dumps(key)} = {json.dumps(item)}" for key, item in value.items())
-        return "{ " + pairs + " }"
-    raise RuntimeError(f"Cannot keep an unsupported tool value in {path}: {value!r}")
-
-
-def record_tools(config, shell, tools):
-    """Add tools to the machine-owned global mise fragment, keeping earlier entries."""
-    path = fragment_path(config)
-    _guard_fragment_path(path)
-    existing = _fragment_tools(config)
-    merged = {**existing, **tools}
-    lines = [FRAGMENT_HEADER, "[tools]"]
-    lines += [f"{json.dumps(key)} = {_toml_value(value, path)}" for key, value in merged.items()]
-    content = "\n".join(lines) + "\n"
-    if path.exists() and path.read_text() == content:
-        return
-    print(f"Recording mise tools in {path}: {', '.join(tools) or 'none yet'}", flush=True)
-    if shell.check:
-        print("  (check: not written)", flush=True)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".dev-machine-setup.")
-    try:
-        with os.fdopen(handle, "w") as stream:
-            stream.write(content)
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-
-
 def _bundle(shell, brew, text):
     """Install missing and upgrade outdated packages with `brew bundle`."""
     return shell.run([brew, "bundle", "install", "--file=-"], input=text,
                      env=dict(shell.env, HOMEBREW_NO_AUTO_UPDATE="1"))
 
 
-def _install_tools(config, shell, tools):
-    """Install the tools with mise, then record them in the global fragment."""
-    if not tools:
-        return
-    if shell.run([config["mise"], "install", *_specs(tools)]) != 0:
+def _install_tools(config, shell):
+    """Link the tools file into the global mise configuration, then install every declared tool."""
+    mise = [config["mise"], "-E", config["profile"]]
+    if shell.run([*mise, "dot", "apply", "--yes", GLOBAL_TOOLS_FILE], cwd=config["repo_dir"]) != 0:
+        raise RuntimeError(f"Could not link {GLOBAL_TOOLS_FILE} to mise/conf.d/tools.toml. "
+                           "See the mise output above.")
+    if shell.run([*mise, "install"], cwd=config["repo_dir"]) != 0:
         raise RuntimeError("mise tools failed to install. See the mise output above.")
-    record_tools(config, shell, tools)
 
 
 def _rerun(config, action):
@@ -247,7 +150,7 @@ def _rerun(config, action):
 def _packages(config, shell):
     repo = Path(config["repo_dir"])
     print(f"Selected package inventories for {config['platform']}/{config['profile']}:")
-    for kind, name in (*BREWFILES.items(), *TOOL_FILES.items()):
+    for kind, name in BREWFILES.items():
         if kind in MAC_ONLY and config["platform"] != "mac":
             continue
         for path in layer_files(config, name):
@@ -260,14 +163,14 @@ def _packages(config, shell):
             if lines:
                 print(f"\n{BREWFILES[kind]} for `brew bundle install` ({len(lines)}):")
                 print("".join(f"  {line}\n" for line in lines), end="")
-    for kind in TOOL_FILES:
-        if config["steps"][kind]:
-            specs = _specs(tools(config, kind))
-            if specs:
-                print(f"\n{TOOL_FILES[kind]} tools for `mise install`: {' '.join(specs)}")
     if config["platform"] != "mac":
         print("\nGUI and App Store inventories apply only on macOS.")
-    print(f"\nmise runtime fragment: {fragment_path(config)}")
+    state = "" if config["steps"]["cli"] else " (skipped by configuration)"
+    print(f"\nmise tools from mise/conf.d/tools.toml for `mise install`{state}:")
+    status, listing = shell.query([config["mise"], "-E", config["profile"], "ls", "--current"], cwd=repo)
+    print(listing, end="")
+    if status != 0:
+        raise RuntimeError("mise could not list the declared tools. See the mise output above.")
 
 
 def _cli(config, shell):
@@ -276,7 +179,7 @@ def _cli(config, shell):
     text = brewfile(config, "cli")
     if text and _bundle(shell, brew, text) != 0:
         raise RuntimeError("CLI packages failed to install or upgrade. See the Homebrew output above.")
-    _install_tools(config, shell, tools(config, "cli"))
+    _install_tools(config, shell)
 
 
 def _remove_replaced_packages(config, shell, brew):
@@ -322,20 +225,12 @@ def _app_store(config, shell):
 
 
 def _node(config, shell):
-    node_tools = tools(config, "node")
-    _install_tools(config, shell, node_tools)
-    if config["platform"] == "linux":
-        for name in (".bashrc", ".zshrc"):
-            ensure_block(Path(config["home"]) / name, SHELL_BLOCK,
-                         [f"export PNPM_HOME={shlex.quote(str(config['pnpm_home']))}",
-                          'export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"'], check=shell.check)
-    pnpm_home = Path(config["pnpm_home"])
-    if not shell.check:
-        (pnpm_home / "bin").mkdir(parents=True, exist_ok=True)
-    env = dict(shell.env, PNPM_HOME=str(pnpm_home),
-               PATH=os.pathsep.join([str(pnpm_home / "bin"), str(pnpm_home), shell.env["PATH"]]))
-    for package in config.get("pnpm_global_packages", []):
-        command = [config["mise"], "exec", *_specs(node_tools), "--", "pnpm", "add", "-g", f"{package}@latest"]
-        if shell.run(command, env=env) != 0:
-            raise RuntimeError(f"Installing the pnpm global package {package} failed.")
+    """Ubuntu shells need PNPM_HOME for pnpm's global directory; macOS dotfiles set it."""
+    if config["platform"] != "linux":
+        print("node: nothing to configure on macOS; the cli step installs Node with the other mise tools.")
+        return []
+    for name in (".bashrc", ".zshrc"):
+        ensure_block(Path(config["home"]) / name, SHELL_BLOCK,
+                     [f"export PNPM_HOME={shlex.quote(str(config['pnpm_home']))}",
+                      'export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"'], check=shell.check)
     return []

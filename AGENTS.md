@@ -18,12 +18,13 @@ contract.
 | --- | --- |
 | `install.sh`, `scripts/bootstrap-*.sh` | Consent prompts, ARM/OS validation and bootstrap prerequisites |
 | `remote-login.sh` | Explicit post-install Remote Login entry point using mise's configured Python |
-| `mise.toml`, `mise.lock` | Public tasks and the locked helper Python |
+| `mise.toml`, `mise.lock`, `.miserc.toml` | Public tasks, the locked helper Python, the global tools link and early mise settings |
+| `mise/conf.d/tools.toml` | Every mise tool for both platforms and profiles, selected with `os` |
 | `scripts/with-sudo-askpass.sh` | Sudo authorisation, password helper and cleanup |
 | `scripts/setup.py`, `scripts/devsetup/cli.py` | Direct CLI and setup ordering |
 | `scripts/devsetup/config.py`, `defaults.toml` | Configuration, OS/profile validation and per-platform defaults |
-| `packages/` | Literal Homebrew Bundle files and mise `[tools]` tables per layer; no installation logic |
-| `scripts/devsetup/software.py` | `brew bundle` installation, mise tool installation and the machine fragment |
+| `packages/` | Literal Homebrew Bundle files per layer; no installation logic |
+| `scripts/devsetup/software.py` | `brew bundle` installation and the mise tool step |
 | `scripts/devsetup/host.py` | Prerequisites, Git, shell, external dotfiles, macOS preferences and Dock |
 | `scripts/update.sh` | Shell maintenance of installed Homebrew, mise, npm/pnpm, App Store and Ollama software |
 | `scripts/devsetup/security.py` | Managed SSH client configuration and Remote Login |
@@ -132,19 +133,20 @@ repository before fetching or changing its revision. Compare local paths
 using Git's path interpretation; never silently rewrite a user's origin.
 
 The external shell activates mise and handles project Node version files.
-It must not require the Homebrew executable. Its `dotfiles.toml` fragment
-must coexist with this repository's `dev-machine-setup.toml` under a real
-`~/.config/mise/conf.d` directory. Honour `MISE_CONFIG_DIR` and
-`XDG_CONFIG_HOME`. Do not overwrite user mise settings or traverse external
-symlinked configuration ancestors, including `.config`. Normal macOS `/var`
-and `/tmp` aliases are permitted. With dotfiles disabled, bootstrap still
-configures regular shell files for Homebrew and mise. Selected CLI setup
+It must not require the Homebrew executable. Its `dotfiles.toml` file must
+coexist with this repository's `dev-machine-setup.toml` symlink under a real
+`~/.config/mise/conf.d` directory. mise creates that symlink from the
+`[dotfiles]` entry in `mise.toml`; it refuses to replace an existing regular
+file there and never writes the user's own mise files. The entry targets
+mise's default global directory; `MISE_CONFIG_DIR` and `XDG_CONFIG_HOME` do
+not move it. With dotfiles disabled, bootstrap still configures regular
+shell files for Homebrew and mise. Selected CLI setup
 adds fzf; selected Node setup adds Ubuntu pnpm paths; selected Zsh setup
 adds the Oh My Zsh/autosuggestions block. Use host.ensure_block for managed
 shell blocks. Never edit symlinked shell files owned by another repository.
 
-SSH key filenames, Git identity, dotfiles source and pnpm global packages live
-in `defaults.toml`. Profiles change the primary managed GitHub key, not Git
+SSH key filenames, Git identity and the dotfiles source live in
+`defaults.toml`. Profiles change the primary managed GitHub key, not Git
 identity. Keep unique timestamped SSH backups inside the security operation
 so direct calls cannot bypass them or overwrite an earlier backup. Backups
 live under `~/.dev-setup-backups`; leave older backup directories untouched.
@@ -165,18 +167,23 @@ command, propagate its exit status and remove temporary credential files.
 
 Combine `shared/`, `shared/<profile>/`, `<mac|linux>/` and
 `<mac|linux>/<profile>/` in that order. Each layer may contain
-`Brewfile.cli`, `Brewfile.gui`, `Brewfile.app-store`, `tools.cli.toml` and
-`tools.node.toml`; every file is optional. Brewfiles use plain Homebrew
-Bundle syntax. Setup concatenates the selected files of one kind in layer
-order and pipes them to `brew bundle install --file=-` with
-`HOMEBREW_NO_AUTO_UPDATE=1`. `tools.*.toml` files hold a mise `[tools]`
-table; setup merges them in layer order, runs `mise install name@version`
-and records the merged table in `~/.config/mise/conf.d/dev-machine-setup.toml`
-while keeping unrelated earlier entries. Create a layer only when it
-contains packages. Profiles are additive, not uninstall lists.
+`Brewfile.cli`, `Brewfile.gui` and `Brewfile.app-store`; every file is
+optional. Brewfiles use plain Homebrew Bundle syntax. Setup concatenates the
+selected files of one kind in layer order and pipes them to
+`brew bundle install --file=-` with `HOMEBREW_NO_AUTO_UPDATE=1`. Create a
+layer only when it contains packages. Profiles are additive, not uninstall
+lists.
+
+mise tools are declared once, in `mise/conf.d/tools.toml`. Give a
+platform-specific entry `os = ["linux"]` or `os = ["macos"]`; put a tool
+that one profile needs in `mise.personal.toml` or `mise.work.toml`. The
+`[dotfiles]` entry in `mise.toml` links `mise/conf.d/tools.toml` to
+`~/.config/mise/conf.d/dev-machine-setup.toml`, so the tools are active in
+every directory. `mise.lock` covers the helper Python only: the tools
+request `latest` or `lts`, and `mise run update` upgrades them in place.
 
 Keep casks under `packages/mac/`. Declare a Linux provider for a CLI cask
-in `packages/linux/tools.cli.toml` where one exists. Homebrew handles
+as a `[tools]` entry with `os = ["linux"]` where one exists. Homebrew handles
 native formulae and casks, including their post-install steps. Do not
 generate Brewfiles or maintain duplicate inventories. The native mise
 bottle installer did not create Git's certificate configuration in clean
@@ -192,7 +199,9 @@ whole tap or disable Homebrew's trust policy. Preview commands must not
 modify the trust store. Maintenance must not grant blanket trust to
 installed taps or restore revoked permissions implicitly.
 
-The `cli` step owns `Brewfile.cli`, `tools.cli.toml` and fzf; a bundle or
+The `cli` step owns `Brewfile.cli`, every mise tool and fzf. After the
+bundle it runs `mise -E <profile> dot apply --yes` for the tools link, then
+`mise -E <profile> install` from the checkout; a bundle, link or
 `mise install` failure stops setup. `gui` owns `Brewfile.gui` and
 `app-store` owns `Brewfile.app-store`; both are Mac-only, and `app-store`
 runs `mdimport /Applications` first so mas can see installed apps. Their
@@ -204,16 +213,14 @@ automatically. Mac App Store installation requires sign-in. Remove disabled
 `claude-code@latest` cask before installing its replacement `claude-code`
 cask.
 
-The `node` step owns `tools.node.toml`: Node, pnpm and all `npm:` mise
-providers. It installs and records those tools, adds the `PNPM_HOME` shell
-block on Ubuntu through `host.ensure_block`, creates `pnpm_home/bin` and
-installs each `pnpm_global_packages` entry with
-`mise exec <specs> -- pnpm add -g <package>@latest`. A pnpm failure stops
-setup. Do not hide Node mutation in CLI installation, even when Node is
-excluded. Native prerequisites of selected components remain allowed;
-exclusions are not an uninstall/package-denial policy. Ensure child tools
-can find the configured mise executable, even with an absolute `--mise`
-path and a minimal `PATH`.
+The `node` step owns the `PNPM_HOME` shell block that it adds on Ubuntu
+through `host.ensure_block`; it runs no commands and does nothing on macOS.
+Node, pnpm and the `npm:` providers are ordinary entries in
+`mise/conf.d/tools.toml`, installed by the `cli` step; `--skip node` does
+not exclude them. Native prerequisites of selected components remain
+allowed; exclusions are not an uninstall/package-denial policy. Ensure child
+tools can find the configured mise executable, even with an absolute
+`--mise` path and a minimal `PATH`.
 
 `mise run update` runs `scripts/update.sh`, a Bash script without Python
 or the sudo wrapper. It maintains all installed software regardless of
@@ -336,9 +343,9 @@ internal command sequences or copied argument echoes. Move overlapping
 shell cases out of the Python checks instead of maintaining duplicate tests.
 
 Checks use temporary directories and substitute commands. They cover the four OS/profile pairs,
-terminal prompts, opt-ins, configuration precedence, malformed tools files,
-headless sudo, backups, revision safety, fragment safety and failure
-propagation. On macOS they also run real unprivileged `sshd -T` gates.
+terminal prompts, opt-ins, configuration precedence, headless sudo, backups,
+revision safety and failure propagation. On macOS they also run real
+unprivileged `sshd -T` gates.
 Stateful service substitutes cover stop-before-write, rollback, offline final-
 key revocation and partial activation failures without changing host services.
 Inspect real selection with `mise run packages --profile personal` and
