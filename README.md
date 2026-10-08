@@ -200,7 +200,7 @@ prefix, the agent socket, the Dock list) must be overridden in
 `mise.macos.local.toml` or `mise.linux.local.toml` instead; Git ignores
 those too. To omit a component for one run, use
 [`--skip`](#choose-what-to-install). To leave the Dock alone on every run,
-set `dock_items = ""` under `[vars]` in `mise.macos.local.toml`. macOS
+set `dock_tiles = ""` under `[vars]` in `mise.macos.local.toml`. macOS
 preferences cannot be removed from a local file, only overridden with a
 different value; remove the entry from `mise.macos.toml` instead.
 
@@ -242,14 +242,14 @@ the `post-defaults` hook, together with the Dock:
 ShowPathbar = true
 
 [vars]
-dock_items = """
+dock_tiles = """
 /System/Applications/Home.app
 spacer
 /Applications/Safari.app
 """
 ```
 
-`dock_items` has one absolute `.app` path or the word `spacer` per line, in
+`dock_tiles` has one absolute `.app` path or the word `spacer` per line, in
 Dock order. The hook removes every tile, adds each line with `dockutil`,
 reports and skips an app that is not installed, and restarts the Dock. An
 empty list leaves the Dock unchanged. `mise run check` validates the list.

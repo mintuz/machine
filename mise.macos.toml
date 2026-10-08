@@ -7,7 +7,7 @@ ssh_agent_socket = "{{ env.HOME }}/Library/Group Containers/2BUA8C4S2C.com.1pass
 # `spacer`. The post-defaults hook rebuilds the Dock from this list with
 # dockutil; a missing app is reported and skipped. An empty list leaves the
 # Dock unchanged.
-dock_items = """
+dock_tiles = """
 /System/Applications/Home.app
 spacer
 /Applications/Cursor.app
@@ -139,7 +139,7 @@ NewTabWorkingDirectoryBehavior = true
 
 # Home-relative preferences, Library visibility, the system-wide update check
 # (sudo, non-interactive: install.sh and the osx task run under the sudo
-# wrapper), then the Dock from vars.dock_items and the app restarts.
+# wrapper), then the Dock from vars.dock_tiles and the app restarts.
 # `--skip macos-defaults` skips this hook with the preferences.
 [bootstrap.hooks.post-defaults]
 run = '''
@@ -150,10 +150,10 @@ if [ "$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticChe
   sudo -n defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true
 fi
 killall Finder
-{%- if vars.dock_items | trim %}
+{%- if vars.dock_tiles | trim %}
 if command -v dockutil >/dev/null 2>&1; then
   dockutil --remove all --no-restart
-  {%- for item in vars.dock_items | trim | split(pat="\n") %}
+  {%- for item in vars.dock_tiles | trim | split(pat="\n") %}
   {%- if item == "spacer" %}
   dockutil --add '' --type spacer --section apps --no-restart
   {%- else %}

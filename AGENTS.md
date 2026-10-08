@@ -200,7 +200,7 @@ Mac preferences are typed `[bootstrap.macos.defaults]` entries in
 deletes one. The two home-relative values, Library visibility, the
 system-wide update check (`sudo -n`, under the wrapper's authorisation),
 `killall Finder` and the Dock are the `post-defaults` hook. The Dock list is
-`vars.dock_items`, one absolute `.app` path or `spacer` per line, validated
+`vars.dock_tiles`, one absolute `.app` path or `spacer` per line, validated
 by `mise run check`; the hook removes every tile, adds each line with
 `dockutil`, reports and skips a missing app, and restarts the Dock. An empty
 list leaves the Dock unchanged. `--skip osx` skips the preferences and the

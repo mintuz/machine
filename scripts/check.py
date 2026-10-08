@@ -10,10 +10,10 @@ import tomllib
 
 
 def dock_failures(path: Path) -> list[str]:
-    """Each `vars.dock_items` line is an absolute .app path or the word `spacer`."""
+    """Each `vars.dock_tiles` line is an absolute .app path or the word `spacer`."""
     with path.open("rb") as source:
-        items = tomllib.load(source).get("vars", {}).get("dock_items", "")
-    return [f"{path.name}: dock_items line {line!r} is not an absolute .app path or 'spacer'"
+        items = tomllib.load(source).get("vars", {}).get("dock_tiles", "")
+    return [f"{path.name}: dock_tiles line {line!r} is not an absolute .app path or 'spacer'"
             for line in items.strip().splitlines()
             if line != "spacer" and not (line.startswith("/") and line.endswith(".app"))]
 
