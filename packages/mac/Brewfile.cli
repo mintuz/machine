@@ -1,0 +1,22 @@
+# macOS CLI formulae and casks for both profiles. Failures stop setup.
+
+# macOS management and Xcode integration
+brew "mas"
+brew "mole"
+brew "xcode-build-server"
+
+# Login shell and Dock management used by setup
+brew "zsh"
+brew "dockutil"
+
+# Behaviour tests for this repository's shell entry points
+brew "bats-core"
+
+# Xcode project management
+cask "tuist", greedy: true
+
+# AI and app CLIs. Linux installs these through packages/linux/tools.*.toml.
+cask "codex"
+cask "notion-cli"
+cask "1password-cli"
+cask "claude-code", greedy: true

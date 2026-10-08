@@ -1,4 +1,4 @@
-"""Load defaults.toml plus explicit local overrides into one plain config dict.
+"""Load defaults.toml plus one optional override file into one plain config dict.
 
 Validation happens here, before any module does mutable work: the OS must be
 ARM64 macOS or ARM64 Ubuntu, the profile personal or work, and the caller a
@@ -12,7 +12,7 @@ import pwd
 import shutil
 import tomllib
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping
 
 PROFILES = ("personal", "work")
 DEFAULT_PROFILE = "personal"
@@ -36,9 +36,6 @@ TEST_ONLY_KEYS = (
     "remote_login_dseditgroup", "remote_login_host_key", "remote_login_port",
     "remote_login_port_timeout", "remote_login_config_owner", "remote_login_config_group",
 )
-SETTING_KEYS = frozenset((*STRING_KEYS, *LIST_KEYS, *MAC_PATH_KEYS, "brew", "profile",
-                          "steps", "revoke_remote_login", "remote_login_sshd",
-                          "remote_login_launchctl", "macos_preferences", "dock_items"))
 
 
 class ConfigError(RuntimeError):
@@ -92,15 +89,11 @@ def _merge(target: dict, layer: dict) -> None:
             target[key] = value
 
 
-def _settings_table(table: dict, source: Path, label: str, *, platform: bool = False) -> None:
-    forbidden = (*DETECTED_KEYS, "machine_type", *TEST_ONLY_KEYS)
-    if platform:
-        forbidden += ("profile",)
+def _settings_table(table: dict, source: Path, label: str) -> None:
+    forbidden = (*DETECTED_KEYS, "machine_type", "profile", *TEST_ONLY_KEYS)
     for key, value in table.items():
         if key in forbidden:
             raise ConfigError(f"{source}: '{key}' cannot be set in {label}.")
-        if key not in SETTING_KEYS:
-            raise ConfigError(f"{source}: unknown setting '{key}' in {label}.")
         if key == "steps":
             if not isinstance(value, dict):
                 raise ConfigError(f"{source}: {label}.steps must be a table.")
@@ -119,21 +112,19 @@ def _layer(settings: dict, platform: str, source: Path) -> dict:
         table = settings.get(name, {})
         if not isinstance(table, dict):
             raise ConfigError(f"{source}: [{name}] must be a table.")
-        _settings_table(table, source, f"[{name}]", platform=True)
+        _settings_table(table, source, f"[{name}]")
     merged = {}
     _merge(merged, shared)
     _merge(merged, settings.get(platform, {}))
     return merged
 
 
-def _select_profile(cli_profile: str | None, environ: Mapping[str, str],
-                    file_profiles: Sequence[tuple[Path, object]]) -> str:
+def _select_profile(cli_profile: str | None, environ: Mapping[str, str]) -> str:
     sources = []
     if cli_profile is not None:
         sources.append(("--profile", cli_profile))
     if environ.get("DEVSETUP_PROFILE"):
         sources.append(("DEVSETUP_PROFILE", environ["DEVSETUP_PROFILE"]))
-    sources.extend((str(path), value) for path, value in file_profiles)
     for source, value in sources:
         if value not in PROFILES:
             raise ConfigError(f"Unsupported profile {value!r} from {source}. Use personal or work.")
@@ -196,15 +187,16 @@ def _expand(value: str, home: Path) -> str:
     return value
 
 
-def load(*, repo_dir: Path, profile: str | None = None, overrides: Sequence[Path] = (),
+def load(*, repo_dir: Path, profile: str | None = None, override: Path | None = None,
          flags: Mapping[str, bool] | None = None, mise: str | None = None,
          environ: Mapping[str, str] | None = None, system: str | None = None,
          machine: str | None = None, os_release: Path = Path("/etc/os-release"),
          euid: int | None = None, user: str | None = None) -> dict:
     """Return the merged, validated settings for this run.
 
-    Precedence: defaults.toml (shared, then [mac]/[linux]), each explicit override
-    file in order (shared, then platform table), then per-run ``flags``.
+    Precedence: defaults.toml (shared, then [mac]/[linux]), the optional ``override``
+    file (shared, then platform table), then per-run ``flags``. Unknown keys pass
+    through untouched; ``[steps]`` merges by key.
     """
     environ = os.environ if environ is None else environ
     if (os.geteuid() if euid is None else euid) == 0:
@@ -214,13 +206,12 @@ def load(*, repo_dir: Path, profile: str | None = None, overrides: Sequence[Path
                                uname.machine if machine is None else machine, os_release)
 
     repo_dir = Path(repo_dir).resolve()
-    file_profiles = []
     config: dict = {}
-    for path in (repo_dir / "defaults.toml", *map(Path, overrides)):
-        layer = _layer(_read_toml(path), platform, path)
-        if "profile" in layer:
-            file_profiles.append((path, layer.pop("profile")))
-        _merge(config, layer)
+    files = [repo_dir / "defaults.toml"]
+    if override is not None:
+        files.append(Path(override))
+    for path in files:
+        _merge(config, _layer(_read_toml(path), platform, path))
 
     for key, value in (flags or {}).items():
         if key not in PER_RUN_FLAGS:
@@ -235,8 +226,7 @@ def load(*, repo_dir: Path, profile: str | None = None, overrides: Sequence[Path
     account = pwd.getpwuid(os.getuid())
     home = Path(environ.get("HOME") or account.pw_dir).resolve()
     config.update(platform=platform, home=str(home), repo_dir=str(repo_dir),
-                  user=user or account.pw_name,
-                  profile=_select_profile(profile, environ, file_profiles))
+                  user=user or account.pw_name, profile=_select_profile(profile, environ))
     _validate(config)
     # Homebrew owns native formulae and casks; its executable defaults to the prefix.
     brew = config.setdefault("brew", f"{config['brew_prefix']}/bin/brew")

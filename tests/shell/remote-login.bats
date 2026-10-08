@@ -90,16 +90,16 @@ SH
   esac
   use_real_python
   mkdir "$TEST_ROOT/caller with spaces"
-  # A unique invalid setting proves which local file was read, without enabling access.
-  printf 'caller_only_invalid_setting = true\n' > "$TEST_ROOT/caller with spaces/local.toml"
+  # A test-only key is rejected with its name, which proves which local file was read without enabling access.
+  printf 'remote_login_port = 2222\n' > "$TEST_ROOT/caller with spaces/local.toml"
   cd "$TEST_ROOT/caller with spaces"
   run bash "$TEST_REPO/remote-login.sh" --config local.toml --check
   [ "$status" -eq 1 ]
-  [[ "$output" == *caller_only_invalid_setting* ]]
+  [[ "$output" == *"'remote_login_port' cannot be set"* ]]
   assert_access_unchanged
   cd "$TEST_REPO"
   run env MISE_ORIGINAL_CWD="$TEST_ROOT/caller with spaces" bash ./remote-login.sh --config local.toml --check
   [ "$status" -eq 1 ]
-  [[ "$output" == *caller_only_invalid_setting* ]]
+  [[ "$output" == *"'remote_login_port' cannot be set"* ]]
   assert_access_unchanged
 }

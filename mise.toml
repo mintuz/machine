@@ -77,13 +77,13 @@ run = 'scripts/with-sudo-askpass.sh python scripts/setup.py zsh --mise "{{ mise_
 raw = true
 
 [tasks.node]
-description = "Install the Node ecosystem, preserve npm globals and configure pnpm"
+description = "Install Node, pnpm and npm-backed tools with mise, then pnpm globals"
 run = 'scripts/with-sudo-askpass.sh python scripts/setup.py node --mise "{{ mise_bin }}"'
 raw = true
 
 [tasks.update]
-description = "Update installed tools, apps, and models"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py update --mise "{{ mise_bin }}"'
+description = "Update Homebrew packages, mise tools, npm/pnpm globals, App Store apps and Ollama models"
+run = 'MISE_BIN="{{ mise_bin }}" scripts/update.sh'
 raw = true
 
 [tasks.ssh]

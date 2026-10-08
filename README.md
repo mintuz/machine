@@ -6,10 +6,10 @@ commands to install software, configure your environment and keep it updated.
 
 The repository aims to:
 
-- Provide repeatable setup with package inventories you can review and customise.
+- Provide repeatable setup with Brewfiles and tool lists you can review and customise.
 - Let you run the full setup or select individual components.
 - Keep SSH client changes and Mac Remote Login opt-in.
-- Preserve local dotfiles work and existing global packages when changing runtimes.
+- Preserve local dotfiles work and your own mise settings.
 
 [Homebrew](https://brew.sh/) manages native command-line tools and Mac apps.
 [mise](https://mise.jdx.dev/) manages runtimes and provides the command
@@ -130,7 +130,7 @@ defaults, supplied configuration files and explicit flags.
 | `mise run packages --profile work` | Show selected packages without installing them. |
 | `mise run install --profile work` | Run full setup without bootstrap or feature prompts. |
 | `mise run cli` | Install native and non-Node command-line tools, plus fzf integration. |
-| `mise run node` | Install Node, pnpm and Node-based tools; preserve npm globals. |
+| `mise run node` | Install Node, pnpm and npm-backed tools with mise, then pnpm globals. |
 | `mise run gui` | Install or upgrade Mac desktop apps. |
 | `mise run app-store` | Install Mac App Store apps; requires sign-in. |
 | `mise run git` | Install Git and apply global Git settings. |
@@ -139,7 +139,7 @@ defaults, supplied configuration files and explicit flags.
 | `mise run osx` | Apply macOS preferences. |
 | `mise run dock` | Apply the configured macOS Dock layout. |
 | `mise run ssh` | Explicitly back up and configure the 1Password SSH client setup. |
-| `mise run update` | Maintain installed software in selected categories. |
+| `mise run update` | Update all installed software, regardless of profile. |
 | `mise run remote-login-check` | Check Mac Remote Login prerequisites without changes. |
 | `mise run remote-login` | Enable Mac remote access after the security prerequisites are met. |
 | `mise run remote-login-revoke` | Disable Mac Remote Login and clear this account's authorised keys. |
@@ -153,7 +153,7 @@ positional profile instead. For task-specific help:
 mise run cli -- --help
 ```
 
-To inspect both inventories and preview supported installation actions:
+To inspect both selections and preview supported installation actions:
 
 ```bash
 mise run packages --profile personal
@@ -198,40 +198,35 @@ dock = false
 pnpm_home = "~/.local/share/pnpm"
 ```
 
-Configuration files are not discovered automatically. Pass your file on
+Configuration files are not discovered automatically. Pass one file on
 each command that needs it:
 
 ```bash
 ./install.sh personal --config "$HOME/.config/dev-machine-setup.toml"
-```
-
-To layer another file, create it first, then pass it last:
-
-```bash
 mise run install --profile work --keep-remote-login \
-  --config "$HOME/.config/dev-machine-setup.toml" \
-  --config "$HOME/.config/dev-machine-work.toml"
+  --config "$HOME/.config/dev-machine-setup.toml"
 ```
 
-Setup loads `defaults.toml`, then each `--config` file in order. Within each
-file, `[mac]` or `[linux]` overrides shared settings. Later files override
-earlier files; explicit feature flags take precedence. `[steps]` merges by
-key. Other lists replace earlier lists. Relative paths resolve from the
-directory where you invoked the command, including through mise.
+Setup loads `defaults.toml`, then your `--config` file. Within each file,
+`[mac]` or `[linux]` overrides shared settings. Your file overrides the
+defaults; explicit feature flags take precedence. `[steps]` merges by key.
+Other lists replace earlier lists. Only one `--config` file is accepted.
+Relative paths resolve from the directory where you invoked the command,
+including through mise.
 
-Unknown settings, unknown steps and non-boolean step choices are errors,
-including in inactive platform tables. On a machine without the helper
-Python, TOML validation follows bootstrap. An invalid file can therefore
-leave bootstrap changes behind.
+Unknown steps and non-boolean step choices are errors, including in
+inactive platform tables. Other unknown keys are ignored. On a machine
+without the helper Python, TOML validation follows bootstrap. An invalid
+file can therefore leave bootstrap changes behind.
 
 ### Select a profile
 
 The default profile is `personal`. Select `work` with the installer's
-positional argument, `--profile work` on tasks, `DEVSETUP_PROFILE`, or a
-root-level `profile = "work"` in a supplied configuration file.
+positional argument, `--profile work` on tasks, or `DEVSETUP_PROFILE`.
+Configuration files cannot set the profile.
 
-All supplied profile values must agree. A command-line profile does not
-override a conflicting environment variable or file. Unset
+The command-line and environment values must agree. A command-line profile
+does not override a conflicting environment variable. Unset
 `DEVSETUP_PROFILE` or make these values agree before changing profiles.
 Setup does not save your per-run profile choice.
 
@@ -286,7 +281,7 @@ mise run app-store --config "$HOME/.config/dev-machine-setup.toml"
 
 The command reports the override. Contradictory explicit flags fail.
 Bootstrap and prerequisite checks cannot be skipped. `--skip` is for
-aggregate setup and maintenance, not direct component commands.
+aggregate setup, not direct component commands or `update`.
 
 **Skipping is not uninstalling or revoking.** It leaves previous settings
 and installed software in place. Included components may still install
@@ -295,7 +290,7 @@ exclude the Git executable needed for dotfiles. Homebrew dependencies and
 the external dotfiles installer can have their own effects.
 
 The `cli` step includes fzf, but not Node. The separate `node` step owns
-Node, pnpm, all `npm:` mise providers and npm global-package transfers.
+Node, pnpm, all `npm:` mise providers and pnpm global packages.
 Tailscale is a Mac GUI package, not an App Store package. Its sign-in and
 required macOS extension approval remain manual.
 
@@ -383,14 +378,14 @@ adjacent `dotfiles.toml` fragment. Setup honours `MISE_CONFIG_DIR` and
 through externally symlinked configuration directories. Tools selected by
 another profile remain in the machine-managed fragment.
 
-Compatible dotfiles should support project `.nvmrc` and `.node-version`
-files and preserve a custom `PNPM_HOME`. When dotfiles are disabled,
-bootstrap configures Homebrew and mise in regular shell files. Selected
-components add their own shell integration. Setup does not edit symlinked
-shell files owned by another repository; those files must activate mise
-and source fzf themselves.
+Compatible dotfiles should support project `.node-version` files and
+preserve a custom `PNPM_HOME`. When dotfiles are disabled, bootstrap
+configures Homebrew and mise in regular shell files. Selected components
+add their own shell integration. Setup does not edit symlinked shell files
+owned by another repository; those files must activate mise and source
+fzf themselves.
 
-### Change Node without losing global packages
+### Install the Node ecosystem
 
 Run the `node` task to install the Node ecosystem independently:
 
@@ -398,65 +393,37 @@ Run the `node` task to install the Node ecosystem independently:
 mise run node --profile personal --config "$HOME/.config/dev-machine-setup.toml"
 ```
 
-Setup preserves npm globals at their installed versions from the previous
-mise runtime, nvm's default and Homebrew Node. Existing target packages win.
-It reports version conflicts, linked or unreadable packages and other nvm
-versions rather than silently discarding them. It honours an explicit npm
-prefix without rewriting `.npmrc` and keeps old runtimes.
-
-Homebrew Node remains linked until the target runs, the package transfer
-succeeds and the default configuration is saved. Conflicting user mise
-settings stop this change. nvm and Homebrew sources are read only before the
-machine fragment first declares Node; later runs do not restore packages
-you deliberately uninstalled.
-
-If a transfer fails, correct the reported cause and rerun the same command
-with the same profile and configuration. The adjacent
-`dev-machine-setup.node.json` records the requested version selector and
-pending source. Setup retains the working pin and resumes from that source.
-If the source was removed, restore it first. Do not delete pending state
-or remove old runtimes to bypass a failure.
+Setup installs the tools listed in the selected `tools.node.toml` files,
+by default Node, pnpm and npm-backed tools, with `mise install`. It records
+them in the machine fragment, keeping your other mise settings. On Ubuntu
+it adds a `PNPM_HOME` block to `.bashrc` and `.zshrc`. It then creates the
+configured `pnpm_home` and installs each `pnpm_global_packages` entry at
+its latest version with `pnpm add -g`. A failed installation stops the
+step; correct the reported cause and rerun the same command.
 
 ## Update installed software
 
-With default component choices, run:
+Run:
 
 ```bash
 mise run update
 ```
 
-Updates cover installed software, not only the current profile's inventory:
-Homebrew packages, machine-managed mise tools, npm and pnpm globals, Mac
-App Store apps and Ollama models. Missing tools are skipped. Ubuntu system
+This runs `scripts/update.sh`. It updates installed software, not only the
+current profile's selection, and ignores configuration files and `--skip`.
+In order, it runs `brew update`, `brew upgrade`, `brew cleanup -s`,
+`mise upgrade --no-prune`, `npm update -g`, `pnpm update -g`, `mas upgrade`
+on macOS and `ollama pull` for each downloaded Ollama model. Ubuntu system
 updates are not included.
 
-Pass your local configuration files when they contain runtime settings or
-saved component choices. To exclude categories for one run:
+A component whose tool is missing is skipped and reported as skipped. pnpm
+is skipped when `PNPM_HOME` is not set. Homebrew keeps its own semantics:
+pinned packages stay pinned and `brew upgrade` is not greedy, so
+self-updating apps are left alone. Mise upgrades keep old versions.
 
-```bash
-mise run update --config "$HOME/.config/dev-machine-setup.toml" \
-  --skip app-store --skip gui
-```
-
-Update accepts these four exclusions and honours their saved `[steps]` choices:
-
-| Component | Maintenance scope |
-|---|---|
-| `cli` | Native formulae, CLI casks, non-Node mise tools and Ollama models. |
-| `gui` | Other installed casks. |
-| `node` | Managed Node, npm and pnpm. |
-| `app-store` | Mac App Store apps through `mas upgrade`. |
-
-Skipping App Store maintenance does not change Apple's automatic updates.
-Exclusions filter whole categories. Cleanup is limited to included
-packages, but Homebrew can still upgrade their dependencies. Maintenance
-preserves Homebrew pinning and non-greedy cask defaults. Non-Node mise
-upgrades keep old versions; Node retains its working pin until the new
-target and package transfer succeed.
-
-Independent components continue after an error. The command returns failure
-if any component failed. Resolve the reported cause, then retry with the
-same options. Follow the Node recovery instructions above for pending transfers.
+Each component runs even if an earlier one failed. The summary at the end
+lists each component as completed, failed or skipped. The command returns
+failure if any component failed. Resolve the reported cause, then rerun.
 
 ## Customise the package inventory
 
@@ -467,17 +434,43 @@ Each run combines four additive layers in order:
 3. `packages/<mac|linux>/`
 4. `packages/<mac|linux>/<personal|work>/`
 
-Each layer can contain `cli.toml`, `cli-optional.toml`, `gui.toml`,
-`gui-optional.toml` and `app-store.toml`. Create only the layers you need;
-the shared required CLI inventory must exist. Unknown inventory paths and
-malformed declarations stop setup.
+Each layer can contain `Brewfile.cli`, `Brewfile.gui`, `Brewfile.app-store`,
+`tools.cli.toml` and `tools.node.toml`. Every file is optional; create only
+the layers you need. A malformed tools file stops setup and names the file.
 
-Add native packages under `[packages]` with `brew:`, `brew-cask:` or `mas:`
-keys. Add mise tools under `[tools]` with their version selectors. Follow
-existing declarations in [packages/](packages/) for platform selectors,
-App Store IDs and greedy cask upgrades. Keep Mac desktop apps under
-`packages/mac/`. Shared CLI casks need `os = "macos"` and separate Linux
-providers where needed. Setup generates its Brewfile from this inventory.
+Brewfiles use plain [Homebrew Bundle](https://docs.brew.sh/Brew-Bundle-and-Brewfile)
+syntax. Setup concatenates the selected files of one kind in layer order and
+passes them to `brew bundle install`. Keep casks in `packages/mac/`:
+
+```ruby
+# packages/shared/Brewfile.cli
+brew "ripgrep"
+tap "can1357/tap"
+brew "can1357/tap/omp", trusted: true
+
+# packages/mac/Brewfile.gui
+cask "raycast"
+cask "claude-code", greedy: true
+
+# packages/mac/Brewfile.app-store
+mas "Things", id: 904280696
+```
+
+Tools files hold a mise `[tools]` table. Setup merges the selected files in
+layer order, installs the tools with `mise install` and records them in
+`~/.config/mise/conf.d/dev-machine-setup.toml`. Node, pnpm and `npm:`
+providers belong in `tools.node.toml`; give a CLI cask a Linux provider in
+`packages/linux/tools.cli.toml` where one exists:
+
+```toml
+# packages/shared/tools.cli.toml
+[tools]
+go = "latest"
+
+# packages/linux/tools.cli.toml
+[tools]
+"aqua:anthropics/claude-code" = "latest"
+```
 
 Before installing a changed selection, inspect it:
 
@@ -486,16 +479,12 @@ mise run packages --profile personal
 mise run packages --profile work
 ```
 
-Required CLI failures stop setup. Optional CLI, GUI and App Store failures do
-not stop the later steps. At the end, setup lists each failed item with its
-probable cause and the next action, then returns failure. Setup skips App
-Store apps that are already installed. It reports an App Store ID that has no
-Mac app instead of trying to install it. Removing an inventory entry does not
-uninstall an existing package. Before a greedy cask upgrade, setup compares
-each app's own version with the version Homebrew offers. If every app of the
-cask is already at that version or newer, for example because the app updated
-itself, setup skips the upgrade so that Homebrew does not replace the app.
-Setup upgrades as before when a version is not plain dotted numbers.
+CLI failures stop setup. GUI and App Store failures do not stop the later
+steps; setup lists them at the end and returns failure. `brew bundle`
+adopts apps that are already in `/Applications`, upgrades outdated items
+and leaves self-updating apps alone unless the item says `greedy: true`.
+App Store installation needs sign-in and the Mac app's ID. Removing an
+entry does not uninstall an existing package.
 
 ### Review package trust
 
@@ -900,12 +889,12 @@ shell suite.
 |---|---|
 | Unsupported platform or root refusal | Use native ARM64 macOS or Ubuntu as a normal user with sudo access. Do not bypass the guard. |
 | Missing mise or helper Python | Complete `./install.sh --bootstrap-only`, then start a fresh login shell. |
-| Profile conflict | Make the command, `DEVSETUP_PROFILE` and supplied files agree. |
-| A local setting is ignored | Pass its file with `--config` on every relevant command. Check file order and platform tables. |
+| Profile conflict | Make the command and `DEVSETUP_PROFILE` agree. |
+| A local setting is ignored | Pass its file with `--config` on every relevant command. Check its platform tables. |
 | Dotfiles update refused | Save local work, resolve divergent history, or correct the configured repository. Do not discard work to bypass the check. |
 | Shell still runs old hooks | Start a fresh login shell with `exec zsh -l`. Sourcing `.zshrc` does not remove previously registered hooks. |
-| Node transfer failed | Preserve the old runtime and pending state. Correct the error, then rerun with the same configuration. |
-| Package or App Store installation failed | Follow the advice in the list at the end of the output, for example remove a leftover upgrade backup or sign in to the App Store. Then retry the affected component. |
+| Node installation failed | Correct the reported mise or pnpm error, then rerun `mise run node` with the same configuration. |
+| Package or App Store installation failed | Read the reported step output, for example sign in to the App Store or review a Homebrew error. Then retry the affected component. |
 | Remote Login refuses a session or fails its checks | Use a fresh local Mac terminal and follow the remote access guide. Never bypass a failed run by enabling SSH manually. |
 
 Repository maintenance guidance is in [AGENTS.md](AGENTS.md).
