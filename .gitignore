@@ -4,3 +4,4 @@ Brewfile.lock.json
 __pycache__/
 mise.local.toml
 mise.*.local.toml
+remote-login.local.toml

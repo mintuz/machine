@@ -28,14 +28,15 @@ run = '[ "$(getent passwd "$(id -un)" | cut -d: -f7)" = /usr/bin/zsh ] || sudo -
 
 # Shell startup blocks for Homebrew, mise and fzf in both shells, Oh My Zsh
 # with its plugin in zsh, and pnpm's global directory in bash (the external
-# dotfiles export it for zsh). A symlinked file belongs to the external
-# dotfiles and is left unchanged with a notice.
+# dotfiles export it for zsh). The blocks activate the ~/.local/bin/mise link
+# that bootstrap keeps, so they read the same on every run. A symlinked file
+# belongs to the external dotfiles and is left unchanged with a notice.
 [bootstrap.hooks.post-user]
 run = '''
 for shell in zsh bash; do
   "{{ vars.shell_block }}" "$HOME/.${shell}rc" "dev-machine mise" \
     'eval "$({{ vars.brew_prefix }}/bin/brew shellenv)"' \
-    "eval \"\$(\"{{ mise_bin }}\" activate $shell)\"" \
+    "eval \"\$(\"\$HOME/.local/bin/mise\" activate $shell)\"" \
     "[ -f ~/.fzf.$shell ] && source ~/.fzf.$shell"
 done
 "{{ vars.shell_block }}" "$HOME/.zshrc" "dev-machine oh-my-zsh" \

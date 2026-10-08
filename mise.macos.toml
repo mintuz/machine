@@ -45,13 +45,21 @@ spacer
 # The packages/mac layer: its Brewfile.cli failure stops bootstrap; its GUI
 # and App Store failures are recorded for the final hook in mise.toml. mas
 # finds installed apps through Spotlight, so /Applications is indexed before
-# the App Store bundle.
+# the App Store bundle. install.sh --skip gui|app-store exports
+# DEV_MACHINE_SKIP, which turns the matching command into a notice.
 [bootstrap.hooks.pre-packages]
 run = [
   '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.cli"',
-  '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.gui" || echo "GUI apps: Homebrew did not install or upgrade every app. Read its output above, then run mise run cli again." >> "{{ vars.issues }}"',
-  'mdimport /Applications',
-  '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.app-store" || echo "App Store apps: mas did not install every app. Make sure that you are signed in to the App Store and that each ID is for a Mac app that is still for sale, then run mise run cli again." >> "{{ vars.issues }}"',
+  '''case ",${DEV_MACHINE_SKIP:-}," in
+  *,gui,*) echo "GUI apps: skipped (DEV_MACHINE_SKIP)." ;;
+  *) {{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.gui" || echo "GUI apps: Homebrew did not install or upgrade every app. Read its output above, then run mise run cli again." >> "{{ vars.issues }}" ;;
+esac''',
+  '''case ",${DEV_MACHINE_SKIP:-}," in
+  *,app-store,*) echo "App Store apps: skipped (DEV_MACHINE_SKIP)." ;;
+  *)
+    mdimport /Applications
+    {{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.app-store" || echo "App Store apps: mas did not install every app. Make sure that you are signed in to the App Store and that each ID is for a Mac app that is still for sale, then run mise run cli again." >> "{{ vars.issues }}" ;;
+esac''',
 ]
 
 # fzf key bindings and completion from the Homebrew formula, without editing
@@ -74,13 +82,15 @@ login_shell = "/bin/zsh"
 [bootstrap.hooks.pre-user]
 run = '[ "$(dscl . -read "/Users/$(id -un)" UserShell | cut -d " " -f 2)" = /bin/zsh ] || sudo -n chsh -s /bin/zsh "$(id -un)"'
 
-# Shell startup block for Homebrew, mise and fzf. A symlinked ~/.zshrc belongs
-# to the external dotfiles and is left unchanged with a notice.
+# Shell startup block for Homebrew, mise and fzf. The block activates the
+# ~/.local/bin/mise link that bootstrap keeps, so it reads the same on every
+# run. A symlinked ~/.zshrc belongs to the external dotfiles and is left
+# unchanged with a notice.
 [bootstrap.hooks.post-user]
 run = '''
 "{{ vars.shell_block }}" "$HOME/.zshrc" "dev-machine mise" \
   'eval "$({{ vars.brew_prefix }}/bin/brew shellenv)"' \
-  'eval "$("{{ mise_bin }}" activate zsh)"' \
+  'eval "$("$HOME/.local/bin/mise" activate zsh)"' \
   '[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh'
 '''
 

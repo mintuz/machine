@@ -96,8 +96,9 @@ fi
 
 # Pass options after the task name, for example `mise run cli --profile work`.
 # `setup` and `bootstrap-only` accept the install.sh arguments. The other
-# tasks run `mise -E <profile> bootstrap` for a set of parts; hooks of a
-# selected part run with it.
+# tasks run `mise -E <env> bootstrap` for a set of parts; hooks of a selected
+# part run with it. scripts/task-env.sh resolves the environment: --profile
+# or DEVSETUP_PROFILE for one run, else the profile install.sh recorded.
 
 [tasks.setup]
 description = "First-run setup: prompts, bootstrap, then configure everything"
@@ -111,52 +112,74 @@ raw = true
 
 [tasks.install]
 description = "Apply every bootstrap part for the profile (no prerequisites, prompts or SSH)"
-usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
-run = 'scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --yes'
+usage = 'flag "--profile <profile>" help="personal or work for this run (default: the recorded profile)"'
+run = '''
+. scripts/task-env.sh
+scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "$mise_env" bootstrap --yes
+'''
 raw = true
 
 [tasks.packages]
 description = "Preview every bootstrap part for the profile without changes"
-usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
-run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --dry-run'
+usage = 'flag "--profile <profile>" help="personal or work for this run (default: the recorded profile)"'
+run = '''
+. scripts/task-env.sh
+"{{ mise_bin }}" -E "$mise_env" bootstrap --dry-run
+'''
 raw = true
 
 [tasks.cli]
 description = "Install every selected Brewfile (CLI, GUI and App Store), fzf integration, the managed files and every mise tool"
-usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
-run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only packages,dotfiles,tools,final-hook --yes'
+usage = 'flag "--profile <profile>" help="personal or work for this run (default: the recorded profile)"'
+run = '''
+. scripts/task-env.sh
+"{{ mise_bin }}" -E "$mise_env" bootstrap --only packages,dotfiles,tools,final-hook --yes
+'''
 raw = true
 
 [tasks.git]
 description = "Copy the global Git ignore file and apply the global Git settings"
-usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
-run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only dotfiles --yes'
+usage = 'flag "--profile <profile>" help="personal or work for this run (default: the recorded profile)"'
+run = '''
+. scripts/task-env.sh
+"{{ mise_bin }}" -E "$mise_env" bootstrap --only dotfiles --yes
+'''
 raw = true
 
 [tasks.zsh]
 description = "Set the login shell, install Oh My Zsh and its plugin, refresh the shell blocks (also refreshes ~/.dotfiles)"
-usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
-run = 'scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only repos,user --yes'
+usage = 'flag "--profile <profile>" help="personal or work for this run (default: the recorded profile)"'
+run = '''
+. scripts/task-env.sh
+scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "$mise_env" bootstrap --only repos,user --yes
+'''
 raw = true
 
 [tasks.dotfiles]
 description = "Clone or fast-forward the external dotfiles and run their installer"
-usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
-run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only repos,task --yes'
+usage = 'flag "--profile <profile>" help="personal or work for this run (default: the recorded profile)"'
+run = '''
+. scripts/task-env.sh
+"{{ mise_bin }}" -E "$mise_env" bootstrap --only repos,task --yes
+'''
 raw = true
 
 [tasks.osx]
 description = "Apply the macOS preferences, Library visibility, update check and Dock layout"
-usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
-run = 'scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only macos-defaults --yes'
+usage = 'flag "--profile <profile>" help="personal or work for this run (default: the recorded profile)"'
+run = '''
+. scripts/task-env.sh
+scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "$mise_env" bootstrap --only macos-defaults --yes
+'''
 raw = true
 
 [tasks.ssh]
 description = "Configure SSH for the 1Password agent (keeps the previous ~/.ssh/config in mise history)"
-usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+usage = 'flag "--profile <profile>" help="personal or work for this run (default: the recorded profile)"'
 run = '''
+. scripts/task-env.sh
 if [ -f "$HOME/.ssh/config" ]; then "{{ mise_bin }}" dot track --yes "$HOME/.ssh/config"; fi
-"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}},ssh" bootstrap --only files,dotfiles --yes
+"{{ mise_bin }}" -E "$mise_env,ssh" bootstrap --only files,dotfiles --yes
 '''
 raw = true
 
@@ -173,25 +196,59 @@ raw = true
 
 [tasks.remote-login-check]
 description = "Check Remote Login prerequisites without sudo or changes"
-run = 'python scripts/setup.py remote-login-check --mise "{{ mise_bin }}"'
+run = "python scripts/devsetup/cli.py remote-login-check"
 raw = true
 
 [tasks.remote-login]
 description = "Enable key-only tailnet Remote Login on this Mac (local console only)"
-run = 'python scripts/setup.py remote-login --mise "{{ mise_bin }}"'
+run = "python scripts/devsetup/cli.py remote-login"
 raw = true
 
 [tasks.remote-login-revoke]
 description = "Disable Remote Login and clear this account's keys (local console only)"
-run = 'python scripts/setup.py remote-login-revoke --mise "{{ mise_bin }}"'
+run = "python scripts/devsetup/cli.py remote-login-revoke"
 raw = true
 
+# Non-installing checks. The mise previews run with an empty HOME so the
+# machine's own files never make the preview refuse.
 [tasks.check]
-description = "Run shell behaviour, configuration and safety checks"
-run = "python -B scripts/check.py"
-raw = true
+description = "Run the shell tests, the TOML, shell syntax and Remote Login checks and the mise previews"
+depends = ["check-shell"]
+run = '''
+set -eu
+echo "Checking the TOML files"
+git ls-files -z '*.toml' | xargs -0 python -B -c '
+import sys, tomllib
+for path in sys.argv[1:]:
+    with open(path, "rb") as source:
+        tomllib.load(source)
+tiles = tomllib.load(open("mise.macos.toml", "rb"))["vars"]["dock_tiles"].strip().splitlines()
+bad = [line for line in tiles if line != "spacer" and not (line.startswith("/") and line.endswith(".app"))]
+if bad:
+    sys.exit("mise.macos.toml: each dock_tiles line must be an absolute .app path or spacer: " + ", ".join(bad))
+'
+echo "Checking the shell entry points"
+for script in install.sh remote-login.sh scripts/*.sh; do bash -n "$script"; done
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck -s bash install.sh remote-login.sh scripts/*.sh
+else
+  echo "shellcheck is not installed; skipped."
+fi
+echo "Checking Remote Login"
+python -B scripts/check-security.py
+echo "Checking the mise previews"
+home="$(mktemp -d)"
+trap 'rm -rf "$home"' EXIT
+for profile in personal work; do HOME="$home" "{{ mise_bin }}" -E "$profile" config; done
+HOME="$home" "{{ mise_bin }}" -E personal bootstrap plan
+HOME="$home" "{{ mise_bin }}" -E work bootstrap --dry-run
+echo "All checks passed. No packages or machine settings were changed."
+'''
 
 [tasks.check-shell]
 description = "Run isolated shell behaviour tests with Bats"
-run = "bats tests/shell"
+run = '''
+command -v bats >/dev/null 2>&1 || { echo "Shell checks require bats-core. Install it with: brew install bats-core" >&2; exit 1; }
+bats tests/shell
+'''
 raw = true

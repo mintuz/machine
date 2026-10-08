@@ -34,7 +34,7 @@ PY
   # The prerequisite check itself fails (no phone keys are configured); the
   # subject is that --check bypasses sudo before the command runs.
   run run_headless bash "$TEST_REPO/scripts/with-sudo-askpass.sh" \
-    "$TEST_PYTHON" "$TEST_REPO/scripts/setup.py" remote-login-check --check --mise /opt/fake/bin/mise
+    "$TEST_PYTHON" "$TEST_REPO/scripts/devsetup/cli.py" remote-login-check --check
   [ "$status" -eq 1 ]
   [ ! -e "$TEST_ROOT/sudo-attempted" ]
   [ ! -e "$HOME/.dev-setup-backups" ]
