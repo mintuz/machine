@@ -688,7 +688,7 @@ def _cli(config, shell):
     required = [entry for entry in entries if entry.kind == "cli"]
     optional = [entry for entry in entries if entry.kind == "cli-optional"]
     brew = _require_brew(config)
-    _remove_disabled_tldr(config, shell, brew)
+    _remove_replaced_packages(config, shell, brew)
     packages = [entry for entry in required if not entry.is_tool]
     if packages and _bundle(shell, brew, packages) != 0:
         raise RuntimeError("Required CLI packages failed to install or upgrade. See the output above.")
@@ -713,10 +713,19 @@ def _rerun(config, action):
     return f"`mise run {action} --profile {config['profile']}`"
 
 
-def _remove_disabled_tldr(config, shell, brew):
-    """tlrc replaces the disabled tldr formula, which also provides `tldr`."""
+def _remove_replaced_packages(config, shell, brew):
+    """Uninstall packages that conflict with their inventory replacements.
+
+    tlrc replaces the disabled tldr formula, which also provides `tldr`. The stable
+    claude-code cask replaces the claude-code@latest channel; Homebrew refuses to
+    install a cask that conflicts with an installed one.
+    """
     if (brew_prefix(config) / "Cellar/tldr").exists() and shell.run([brew, "uninstall", "tldr"]) != 0:
         raise RuntimeError("Could not uninstall the disabled tldr formula.")
+    old_cask = "claude-code@latest"
+    installed, _ = shell.query([brew, "list", "--cask", "--versions", old_cask])
+    if installed == 0 and shell.run([brew, "uninstall", "--cask", old_cask]) != 0:
+        raise RuntimeError(f"Could not uninstall the {old_cask} cask that claude-code replaces.")
 
 
 def _gui(config, shell):
