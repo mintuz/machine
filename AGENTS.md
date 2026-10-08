@@ -45,8 +45,14 @@ profile, OS, architecture and user before bootstrap. Reject Intel, Rosetta,
 non-Ubuntu Linux and root. Bootstrap helpers are sourced, not independent
 entry points. Keep OS prerequisites, Homebrew installation and the
 checksummed mise/locked Python installation in that order; Homebrew must be
-on the installer's `PATH` because the bootstrap hooks call `brew`. After
-them the installer checks that `git` and `curl` exist, then runs one
+on the installer's `PATH` because the bootstrap hooks call `brew`. The mise
+release is pinned once, as `min_version` in `mise.toml`;
+`scripts/bootstrap-mise.sh` reads it from there and holds the SHA-256 of
+each platform's executable. Change the three together; the installer
+refuses a download whose checksum does not match. Do not replace this with
+`mise.run` (it checks a checksum file from the same release) or with a tool
+the fresh machine lacks. After them the installer checks that `git` and
+`curl` exist, then runs one
 command under the sudo wrapper: `mise -E <profile>[,ssh] bootstrap --yes
 [--skip <parts>]` from the checkout. A full run calls no Python. Do not
 introduce an Ansible or pip bootstrap dependency. `--bootstrap-only` runs

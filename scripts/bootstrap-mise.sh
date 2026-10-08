@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Sourced by install.sh after the OS bootstrap. Installs the pinned mise release,
-# verified against its published SHA-256, then the Python locked in mise.lock
-# for the Remote Login commands. Sets mise_bin.
+# Sourced by install.sh after the OS bootstrap. Installs the mise release that
+# mise.toml pins as min_version, verified against the SHA-256 recorded here,
+# then the Python locked in mise.lock for the Remote Login commands. Sets
+# mise_bin. A release bump changes min_version and both checksums together;
+# a stale checksum makes the installer refuse the download.
 : "${repo_dir:?Source this file from install.sh}"
 : "${platform:?Source this file from install.sh}"
-mise_version=2026.10.3
+mise_version="$(sed -n 's/^min_version = "\([^"]*\)"$/\1/p' "$repo_dir/mise.toml")"
+[[ -n "$mise_version" ]] || { echo "mise.toml has no min_version pin." >&2; exit 1; }
 case "$platform" in
   macos)
     mise_asset=macos-arm64
