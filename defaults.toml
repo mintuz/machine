@@ -1,125 +1,25 @@
-# Shared user preferences. Pass an explicit local TOML file with
+# Settings for the Remote Login commands (`./remote-login.sh`,
+# `mise run remote-login*`). Pass an explicit local TOML file with
 # `--config PATH` to override any key for one run; the profile is never stored
 # here and is chosen per run with `--profile personal|work` (default personal).
-
-git_email = "github@mintuz.com"
-git_name = "Adam Bulmer"
-
-dotfiles_repo = "https://github.com/mintuz/.dotfiles.git"
-dotfiles_version = "master"
-dotfiles_conflict_paths = [".agents/.skill-lock.json"]
-
-personal_public_ssh_key = "personal_github.pub"
-work_public_ssh_key = "work_github.pub"
+# Everything else that setup applies is declared in mise.toml, the platform
+# files mise.macos.toml and mise.linux.toml, and mise.ssh.toml.
 
 # Remote Login (`mise run remote-login`, Mac only). List phone public key files
 # from .ssh/. These source limits apply to normal post-unlock SSH, not FileVault unlock.
 remote_login_public_keys = []
 remote_login_sources = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
 
-# Per-run choices. install.sh prompts or flags override them for one run;
-# nothing is persisted.
+# Per-run choices. Flags override them for one run; nothing is persisted.
 revoke_remote_login = false
 
 [steps]
-ssh = false
-git = true
-fzf = true
 remote-login = false
-zsh = true
-osx = true
-dotfiles = true
-dock = true
 
 [mac]
-shell_path = "/bin/zsh"
-ssh_agent_socket = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 brew_prefix = "/opt/homebrew"
 remote_login_sshd_file = "/etc/ssh/sshd_config.d/010-remote-login.conf"
 tailscale_cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
 
-# Arguments following `defaults write`; {home} expands to the current home directory.
-# An empty list skips these preferences, but not Library visibility or update checks.
-macos_preferences = [
-  ["com.apple.finder", "ShowPathbar", "-bool", "true"],
-  ["com.apple.finder", "ShowStatusBar", "-bool", "true"],
-  ["com.apple.finder", "ShowExternalHardDrivesOnDesktop", "-bool", "true"],
-  ["com.apple.finder", "ShowHardDrivesOnDesktop", "-bool", "true"],
-  ["com.apple.finder", "ShowMountedServersOnDesktop", "-bool", "true"],
-  ["com.apple.finder", "ShowRemovableMediaOnDesktop", "-bool", "true"],
-  ["com.apple.finder", "_FXShowPosixPathInTitle", "-bool", "YES"],
-  ["com.apple.finder", "NewWindowTarget", "-string", "PfLo"],
-  ["com.apple.finder", "NewWindowTargetPath", "-string", "file://{home}"],
-  ["com.apple.finder", "FXDefaultSearchScope", "-string", "SCcf"],
-  ["NSGlobalDomain", "AppleShowAllExtensions", "-bool", "true"],
-  ["com.apple.finder", "FXEnableExtensionChangeWarning", "-bool", "false"],
-  ["NSGlobalDomain", "AppleShowScrollBars", "-string", "Always"],
-  ["NSGlobalDomain", "KeyRepeat", "-int", "0"],
-  ["com.apple.dock", "orientation", "left"],
-  ["com.apple.dock", "show-process-indicators", "-bool", "true"],
-  ["com.apple.dock", "showhidden", "-bool", "true"],
-  ["com.apple.dock", "launchanim", "-bool", "false"],
-  ["com.apple.dock", "mineffect", "scale"],
-  ["com.apple.dock", "expose-animation-duration", "-float", "0.1"],
-  ["com.apple.dock", "autohide", "-bool", "false"],
-  ["com.apple.dock", "autohide-delay", "-float", "0"],
-  ["com.apple.finder", "EmptyTrashSecurely", "-bool", "true"],
-  ["com.apple.finder", "DisableAllAnimations", "-bool", "true"],
-  ["com.apple.finder", "QuitMenuItem", "-bool", "true"],
-  ["com.apple.finder", "AppleShowAllFiles", "-bool", "true"],
-  ["com.apple.finder", "FXPreferredViewStyle", "-string", "Nlsv"],
-  ["NSGlobalDomain", "NSNavPanelExpandedStateForSaveMode", "-bool", "true"],
-  ["NSGlobalDomain", "PMPrintingExpandedStateForPrint", "-bool", "true"],
-  ["NSGlobalDomain", "AppleKeyboardUIMode", "-int", "3"],
-  ["com.apple.screensaver", "askForPassword", "-int", "1"],
-  ["com.apple.screensaver", "askForPasswordDelay", "-int", "0"],
-  ["com.apple.screencapture", "location", "-string", "{home}/Desktop"],
-  ["com.apple.screencapture", "disable-shadow", "-bool", "true"],
-  ["NSGlobalDomain", "AppleFontSmoothing", "-int", "2"],
-  ["com.apple.spotlight", "DictionaryLookupEnabled", "-bool", "false"],
-  ["NSGlobalDomain", "NSAutomaticSpellingCorrectionEnabled", "-bool", "false"],
-  ["com.apple.Terminal", "NewTabWorkingDirectoryBehavior", "-bool", "true"],
-]
-
-# dockutil --add arguments; an empty path is a spacer. [] leaves the Dock unchanged.
-dock_items = [
-  ["/System/Applications/Home.app"],
-  ["", "--type", "spacer", "--section", "apps", "--after", "Home"],
-  ["/Applications/Cursor.app"],
-  ["/Applications/Warp.app"],
-  ["/Applications/Xcode.app"],
-  ["/Applications/Figma.app"],
-  ["/Applications/Bruno.app"],
-  ["", "--type", "spacer", "--section", "apps", "--after", "Bruno"],
-  ["/Applications/ChatGPT.app"],
-  ["/Applications/Claude.app"],
-  ["/Applications/Open Design.app"],
-  ["", "--type", "spacer", "--section", "apps", "--after", "Open Design"],
-  ["/Applications/Safari.app"],
-  ["/Applications/Helium.app"],
-  ["", "--type", "spacer", "--section", "apps", "--after", "Helium"],
-  ["/Applications/Drafts.app"],
-  ["/Applications/Notion.app"],
-  ["/Applications/Obsidian.app"],
-  ["/Applications/1Password.app"],
-  ["/Applications/Things3.app"],
-  ["", "--type", "spacer", "--section", "apps", "--after", "Things"],
-  ["/System/Applications/Mail.app"],
-  ["/Applications/Proton Mail.app"],
-  ["/System/Applications/Calendar.app"],
-  ["", "--type", "spacer", "--section", "apps", "--after", "Calendar"],
-  ["/System/Applications/Messages.app"],
-  ["/Applications/Slack.app"],
-  ["/Applications/GatherV2.app"],
-  ["/Applications/Discord.app"],
-  ["", "--type", "spacer", "--section", "apps", "--after", "Discord"],
-  ["/System/Applications/Music.app"],
-  ["/System/Applications/Podcasts.app"],
-]
-
 [linux]
-shell_path = "/usr/bin/zsh"
-# A forwarded SSH_AUTH_SOCK replaces this with the literal "SSH_AUTH_SOCK" so the
-# session-specific socket path is never saved.
-ssh_agent_socket = "~/.1password/agent.sock"
 brew_prefix = "/home/linuxbrew/.linuxbrew"

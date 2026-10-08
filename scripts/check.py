@@ -9,6 +9,15 @@ import sys
 import tomllib
 
 
+def dock_failures(path: Path) -> list[str]:
+    """Each `vars.dock_items` line is an absolute .app path or the word `spacer`."""
+    with path.open("rb") as source:
+        items = tomllib.load(source).get("vars", {}).get("dock_items", "")
+    return [f"{path.name}: dock_items line {line!r} is not an absolute .app path or 'spacer'"
+            for line in items.strip().splitlines()
+            if line != "spacer" and not (line.startswith("/") and line.endswith(".app"))]
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     failures: list[str] = []
@@ -25,6 +34,7 @@ def main() -> int:
                 tomllib.load(source)
         except (OSError, tomllib.TOMLDecodeError) as error:
             failures.append(f"{path.relative_to(root)}: {error}")
+    failures.extend(dock_failures(root / "mise.macos.toml"))
 
     scripts = sorted(root.glob("*.sh")) + sorted((root / "scripts").rglob("*.sh"))
     commands = [(str(path.relative_to(root)), ["/bin/bash", "-n", str(path)]) for path in scripts]

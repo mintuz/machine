@@ -1,9 +1,10 @@
 """Load defaults.toml plus one optional override file into one plain config dict.
 
-Validation happens here, before any module does mutable work: the OS must be
-ARM64 macOS or ARM64 Ubuntu, the profile personal or work, and the caller a
-normal user. Detection inputs are keyword arguments so checks can describe a
-host without overriding the real one through the environment.
+The Remote Login commands are the only readers. Validation happens here,
+before any module does mutable work: the OS must be ARM64 macOS or ARM64
+Ubuntu, the profile personal or work, and the caller a normal user. Detection
+inputs are keyword arguments so checks can describe a host without overriding
+the real one through the environment.
 """
 from __future__ import annotations
 
@@ -17,14 +18,12 @@ from typing import Mapping
 PROFILES = ("personal", "work")
 DEFAULT_PROFILE = "personal"
 PLATFORMS = ("mac", "linux")
-STEPS = ("ssh", "git", "fzf", "remote-login", "zsh", "osx", "dotfiles", "dock")
+STEPS = ("remote-login",)
 PER_RUN_FLAGS = (*STEPS, "revoke_remote_login")
-STRING_KEYS = ("git_email", "git_name", "dotfiles_repo", "dotfiles_version",
-               "personal_public_ssh_key", "work_public_ssh_key", "shell_path",
-               "ssh_agent_socket", "brew_prefix")
-LIST_KEYS = ("dotfiles_conflict_paths", "remote_login_public_keys", "remote_login_sources")
+STRING_KEYS = ("brew_prefix",)
+LIST_KEYS = ("remote_login_public_keys", "remote_login_sources")
 MAC_PATH_KEYS = ("remote_login_sshd_file", "tailscale_cli")
-PATH_KEYS = ("shell_path", "brew_prefix", "brew") + MAC_PATH_KEYS
+PATH_KEYS = ("brew_prefix",) + MAC_PATH_KEYS
 # Detected per run; a settings file cannot replace them.
 DETECTED_KEYS = ("home", "repo_dir", "platform", "user", "mise")
 # These substitutions belong to isolated direct module tests, not user settings.
@@ -161,22 +160,6 @@ def _validate(config: dict) -> None:
         for key in MAC_PATH_KEYS:
             if not isinstance(config.get(key), str) or not config[key]:
                 raise ConfigError(f"Setting '{key}' must be a non-empty string on macOS.")
-        for key in ("macos_preferences", "dock_items"):
-            rows = config.get(key)
-            if not isinstance(rows, list) or not all(isinstance(row, list) and row
-                    and all(isinstance(value, str) for value in row) for row in rows):
-                raise ConfigError(f"Setting '{key}' must be a list of argument lists.")
-        for row in config["macos_preferences"]:
-            if len(row) not in (3, 4) or not all(row[:2]):
-                raise ConfigError("Each macos_preferences entry needs a domain, key and value, "
-                                  "with an optional value type.")
-            if len(row) == 4 and row[2] not in ("-bool", "-int", "-float", "-string", "-date", "-data"):
-                raise ConfigError(f"Unsupported macOS preference type {row[2]!r}.")
-        for row in config["dock_items"]:
-            if any(not part for part in row[1:]) or (row[0] and not Path(_expand(
-                    row[0], Path(config["home"]))).is_absolute()):
-                raise ConfigError("Each dock_items entry must start with an absolute path, ~/ or "
-                                  "an empty spacer path, followed by nonempty arguments.")
 
 
 def _expand(value: str, home: Path) -> str:
@@ -226,20 +209,12 @@ def load(*, repo_dir: Path, profile: str | None = None, override: Path | None = 
     config.update(platform=platform, home=str(home), repo_dir=str(repo_dir),
                   user=user or account.pw_name, profile=_select_profile(profile, environ))
     _validate(config)
-    # Homebrew owns native formulae and casks; its executable defaults to the prefix.
-    brew = config.setdefault("brew", f"{config['brew_prefix']}/bin/brew")
-    if not isinstance(brew, str) or not brew:
-        raise ConfigError("Setting 'brew' must be a non-empty string.")
 
     for key in PATH_KEYS:
         if key in config:
             config[key] = _expand(config[key], home)
             if not Path(config[key]).is_absolute():
                 raise ConfigError(f"Setting '{key}' must be an absolute path or start with ~/.")
-    if platform == "linux" and environ.get("SSH_AUTH_SOCK"):
-        config["ssh_agent_socket"] = "SSH_AUTH_SOCK"
-    else:
-        config["ssh_agent_socket"] = _expand(config["ssh_agent_socket"], home)
 
     mise = mise or shutil.which("mise", path=environ.get("PATH"))
     if not mise:

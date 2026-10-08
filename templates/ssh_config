@@ -1,15 +1,19 @@
+{#- Rendered by the [dotfiles] entry in mise.ssh.toml (mise -E <profile>,ssh).
+    The agent socket comes from the platform file's [vars]; a forwarded Linux
+    agent keeps the literal SSH_AUTH_SOCK so no session path is saved. The
+    profile selects the primary GitHub key. -#}
 # By default, use the 1Password SSH agent for all hosts
 Host *
-  IdentityAgent "${identity_agent}"
+  IdentityAgent "{% if os() == "linux" and env.SSH_AUTH_SOCK %}SSH_AUTH_SOCK{% else %}{{ vars.ssh_agent_socket }}{% endif %}"
 
 Host github.com
   HostName github.com
   # Downloaded from 1Password App
-  IdentityFile ~/.ssh/${primary_public_key}
+  IdentityFile ~/.ssh/{% if "work" in mise_env %}{{ vars.work_public_key }}{% else %}{{ vars.personal_public_key }}{% endif %}
   IdentitiesOnly yes
 
 Host github-alt.com
   HostName github.com
   # Downloaded from 1Password App
-  IdentityFile ~/.ssh/${alternate_public_key}
+  IdentityFile ~/.ssh/{% if "work" in mise_env %}{{ vars.personal_public_key }}{% else %}{{ vars.work_public_key }}{% endif %}
   IdentitiesOnly yes

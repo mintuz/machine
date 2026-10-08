@@ -63,17 +63,12 @@ assert_no_host_effects() {
 
 @test "unknown or mandatory skips and missing option values are refused" {
   for entrypoint in install.sh new-mac.sh; do
-    for step in unknown preflight; do
+    for step in unknown preflight git fzf dock remote-login; do
       run bash "$TEST_REPO/$entrypoint" --skip "$step"
       [ "$status" -eq 64 ]
       assert_no_host_effects
     done
-    for option in --skip --config; do
-      run bash "$TEST_REPO/$entrypoint" "$option"
-      [ "$status" -eq 64 ]
-      assert_no_host_effects
-    done
-    run bash "$TEST_REPO/$entrypoint" --config one.toml --config two.toml
+    run bash "$TEST_REPO/$entrypoint" --skip
     [ "$status" -eq 64 ]
     assert_no_host_effects
   done
@@ -98,35 +93,25 @@ SH
   done
 }
 
-@test "bootstrap-only launchers perform isolated user bootstrap without full setup or SSH replacement" {
-  [ "$EUID" -ne 0 ] || skip "real CLI requires a normal user"
-  # Real config loading is intentionally not monkeypatched on unsupported hosts.
-  case "$(/usr/bin/uname -s):$(/usr/bin/uname -m)" in
-    Darwin:arm64) ;;
-    *) skip "real bootstrap integration requires an ARM64 Mac" ;;
-  esac
+@test "bootstrap-only launchers apply the user parts only, without full setup or SSH replacement" {
   for script in "$TEST_REPO"/scripts/bootstrap-*.sh; do
     printf ':\n' > "$script"
   done
-  printf 'mise_bin="$TEST_BIN/mise"\npython_bin="$TEST_PYTHON"\n' > "$TEST_REPO/scripts/bootstrap-mise.sh"
+  printf 'mise_bin="$TEST_BIN/mise"\n' > "$TEST_REPO/scripts/bootstrap-mise.sh"
   stub_command mise <<'SH'
 #!/bin/sh
-exit 99
+echo "$*" >> "$TEST_ROOT/mise-calls"
 SH
-  # Full setup must never be reached, even if its selected steps would be no-ops.
-  printf '#!/bin/sh\ntouch "$TEST_ROOT/full-setup-attempted"\nexit 98\n' > "$TEST_REPO/scripts/with-sudo-askpass.sh"
-  run bash "$TEST_REPO/install.sh" --bootstrap-only </dev/null
+  printf '#!/bin/sh\nexec "$@"\n' > "$TEST_REPO/scripts/with-sudo-askpass.sh"
+  run bash "$TEST_REPO/install.sh" --bootstrap-only --1password-ssh </dev/null
   [ "$status" -eq 0 ]
-  [ -d "$HOME/.gnupg" ]
-  [ -s "$HOME/.zshrc" ]
-  [ ! -e "$TEST_ROOT/full-setup-attempted" ]
+  [ "$(cat "$TEST_ROOT/mise-calls")" = "-E personal bootstrap --only files,user --yes" ]
   cmp "$TEST_ROOT/original-ssh" "$HOME/.ssh/config"
-  cp "$HOME/.zshrc" "$TEST_ROOT/first-zshrc"
-  run bash "$TEST_REPO/new-mac.sh" --keep-ssh </dev/null
+  rm "$TEST_ROOT/mise-calls"
+  run env DEVSETUP_PROFILE=work bash "$TEST_REPO/new-mac.sh" --keep-ssh </dev/null
   [ "$status" -eq 0 ]
-  cmp "$TEST_ROOT/first-zshrc" "$HOME/.zshrc"
+  [ "$(cat "$TEST_ROOT/mise-calls")" = "-E work bootstrap --only files,user --yes" ]
   cmp "$TEST_ROOT/original-ssh" "$HOME/.ssh/config"
-  [ ! -e "$TEST_ROOT/full-setup-attempted" ]
   [ ! -e "$TEST_ROOT/sudo-attempted" ]
   [ ! -e "$TEST_ROOT/brew-attempted" ]
 }

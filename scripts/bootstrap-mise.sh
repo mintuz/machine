@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by install.sh after the OS bootstrap. Installs the pinned mise release,
-# verified against its published SHA-256, then the Python locked in mise.lock.
-# Sets mise_bin and python_bin for install.sh.
+# verified against its published SHA-256, then the Python locked in mise.lock
+# for the Remote Login commands. Sets mise_bin.
 : "${repo_dir:?Source this file from install.sh}"
 : "${platform:?Source this file from install.sh}"
 mise_version=2026.10.3
@@ -56,4 +56,3 @@ fi
 
 "$mise_bin" trust "$repo_dir/mise.toml"
 (cd "$repo_dir" && "$mise_bin" install --locked python)
-python_bin="$(cd "$repo_dir" && "$mise_bin" which python)"

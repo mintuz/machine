@@ -1,7 +1,51 @@
-# Loaded on macOS by auto_env (.miserc.toml). The packages/mac layer: its
-# Brewfile.cli failure stops bootstrap; its GUI and App Store failures are
-# recorded for the final hook in mise.toml. mas finds installed apps through
-# Spotlight, so /Applications is indexed before the App Store bundle.
+# Loaded on macOS by auto_env (.miserc.toml): the packages/mac layer, the
+# login shell, the shell startup block, the macOS preferences and the Dock.
+[vars]
+brew_prefix = "/opt/homebrew"
+ssh_agent_socket = "{{ env.HOME }}/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+# One Dock tile per line, in order: an absolute .app path or the word
+# `spacer`. The post-defaults hook rebuilds the Dock from this list with
+# dockutil; a missing app is reported and skipped. An empty list leaves the
+# Dock unchanged.
+dock_items = """
+/System/Applications/Home.app
+spacer
+/Applications/Cursor.app
+/Applications/Warp.app
+/Applications/Xcode.app
+/Applications/Figma.app
+/Applications/Bruno.app
+spacer
+/Applications/ChatGPT.app
+/Applications/Claude.app
+/Applications/Open Design.app
+spacer
+/Applications/Safari.app
+/Applications/Helium.app
+spacer
+/Applications/Drafts.app
+/Applications/Notion.app
+/Applications/Obsidian.app
+/Applications/1Password.app
+/Applications/Things3.app
+spacer
+/System/Applications/Mail.app
+/Applications/Proton Mail.app
+/System/Applications/Calendar.app
+spacer
+/System/Applications/Messages.app
+/Applications/Slack.app
+/Applications/GatherV2.app
+/Applications/Discord.app
+spacer
+/System/Applications/Music.app
+/System/Applications/Podcasts.app
+"""
+
+# The packages/mac layer: its Brewfile.cli failure stops bootstrap; its GUI
+# and App Store failures are recorded for the final hook in mise.toml. mas
+# finds installed apps through Spotlight, so /Applications is indexed before
+# the App Store bundle.
 [bootstrap.hooks.pre-packages]
 run = [
   '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.cli"',
@@ -9,3 +53,110 @@ run = [
   'mdimport /Applications',
   '{{ vars.brew_bundle }}="{{ config_root }}/packages/mac/Brewfile.app-store" || echo "App Store apps: mas did not install every app. Make sure that you are signed in to the App Store and that each ID is for a Mac app that is still for sale, then run mise run cli again." >> "{{ vars.issues }}"',
 ]
+
+# fzf key bindings and completion from the Homebrew formula, without editing
+# any shell file; the shell block below sources ~/.fzf.zsh.
+[bootstrap.hooks.post-packages]
+run = '''
+if [ -x "{{ vars.brew_prefix }}/opt/fzf/install" ]; then
+  "{{ vars.brew_prefix }}/opt/fzf/install" --key-bindings --completion --no-update-rc
+else
+  echo "fzf: not installed; skipped the key bindings and completion."
+fi
+'''
+
+[bootstrap.user]
+login_shell = "/bin/zsh"
+
+# Shell startup block for Homebrew, mise and fzf. A symlinked ~/.zshrc belongs
+# to the external dotfiles and is left unchanged with a notice.
+[bootstrap.hooks.post-user]
+run = '''
+"{{ vars.shell_block }}" "$HOME/.zshrc" "dev-machine mise" \
+  'eval "$({{ vars.brew_prefix }}/bin/brew shellenv)"' \
+  'eval "$("{{ mise_bin }}" activate zsh)"' \
+  '[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh'
+'''
+
+# User preferences, typed. mise writes a value only when it is unset or
+# differs. Values that depend on the home directory are in the post-defaults
+# hook, because mise uses these values exactly as written.
+[bootstrap.macos.defaults."com.apple.finder"]
+ShowPathbar = true
+ShowStatusBar = true
+ShowExternalHardDrivesOnDesktop = true
+ShowHardDrivesOnDesktop = true
+ShowMountedServersOnDesktop = true
+ShowRemovableMediaOnDesktop = true
+_FXShowPosixPathInTitle = true
+NewWindowTarget = "PfLo"
+FXDefaultSearchScope = "SCcf"
+FXEnableExtensionChangeWarning = false
+EmptyTrashSecurely = true
+DisableAllAnimations = true
+QuitMenuItem = true
+AppleShowAllFiles = true
+FXPreferredViewStyle = "Nlsv"
+
+[bootstrap.macos.defaults.NSGlobalDomain]
+AppleShowAllExtensions = true
+AppleShowScrollBars = "Always"
+KeyRepeat = 0
+NSNavPanelExpandedStateForSaveMode = true
+PMPrintingExpandedStateForPrint = true
+AppleKeyboardUIMode = 3
+AppleFontSmoothing = 2
+NSAutomaticSpellingCorrectionEnabled = false
+
+[bootstrap.macos.defaults."com.apple.dock"]
+orientation = "left"
+show-process-indicators = true
+showhidden = true
+launchanim = false
+mineffect = "scale"
+expose-animation-duration = 0.1
+autohide = false
+autohide-delay = 0.0
+
+[bootstrap.macos.defaults."com.apple.screensaver"]
+askForPassword = 1
+askForPasswordDelay = 0
+
+[bootstrap.macos.defaults."com.apple.screencapture"]
+disable-shadow = true
+
+[bootstrap.macos.defaults."com.apple.spotlight"]
+DictionaryLookupEnabled = false
+
+[bootstrap.macos.defaults."com.apple.Terminal"]
+NewTabWorkingDirectoryBehavior = true
+
+# Home-relative preferences, Library visibility, the system-wide update check
+# (sudo, non-interactive: install.sh and the osx task run under the sudo
+# wrapper), then the Dock from vars.dock_items and the app restarts.
+# `--skip macos-defaults` skips this hook with the preferences.
+[bootstrap.hooks.post-defaults]
+run = '''
+defaults write com.apple.finder NewWindowTargetPath -string "file://$HOME"
+defaults write com.apple.screencapture location -string "$HOME/Desktop"
+chflags nohidden "$HOME/Library"
+if [ "$(defaults read /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled 2>/dev/null)" != 1 ]; then
+  sudo -n defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true
+fi
+killall Finder
+{%- if vars.dock_items | trim %}
+if command -v dockutil >/dev/null 2>&1; then
+  dockutil --remove all --no-restart
+  {%- for item in vars.dock_items | trim | split(pat="\n") %}
+  {%- if item == "spacer" %}
+  dockutil --add '' --type spacer --section apps --no-restart
+  {%- else %}
+  dockutil --add {{ item | quote }} --no-restart || echo "Dock: could not add {{ item }}; continuing."
+  {%- endif %}
+  {%- endfor %}
+  killall Dock
+else
+  echo "dockutil is not available; skipping Dock configuration."
+fi
+{%- endif %}
+'''

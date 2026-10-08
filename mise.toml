@@ -14,12 +14,26 @@ task.run_auto_install = false
 # declared in mise/conf.d/tools.toml.
 python = "3.14.8"
 
-# One symlink makes mise/conf.d/tools.toml part of the global mise
-# configuration, next to the dotfiles repository's dotfiles.toml. The dotfiles
-# phase of `mise bootstrap` applies it; mise refuses to replace an existing
-# regular file at the target.
+# Files mise creates or copies on every platform: the global tools link (next
+# to the dotfiles repository's dotfiles.toml) and the global Git ignore file.
+# mise refuses to replace an existing regular file at the link target.
 [dotfiles]
 "~/.config/mise/conf.d/dev-machine-setup.toml" = { source = "mise/conf.d/tools.toml", mode = "symlink" }
+"~/.global_gitignore" = { source = "templates/global_gitignore", mode = "copy" }
+
+[bootstrap.directories."~/.ssh"]
+mode = "0700"
+
+[bootstrap.directories."~/.gnupg"]
+mode = "0700"
+
+# The external dotfiles and the Oh My Zsh plugin. mise clones a missing
+# checkout, fast-forwards a clean one to the ref and refuses a dirty
+# worktree, a different origin or a non-Git directory. The Oh My Zsh
+# pre-repos hook runs first so the plugin lands inside its custom directory.
+[bootstrap.repos]
+"~/.dotfiles" = { url = "https://github.com/mintuz/.dotfiles.git", ref = "master" }
+"~/.oh-my-zsh/custom/plugins/zsh-autosuggestions" = { url = "https://github.com/zsh-users/zsh-autosuggestions.git", ref = "master" }
 
 # Homebrew Bundle installs the layer Brewfiles from `pre-packages` hooks, one
 # `brew bundle install` per file. mise appends hooks in config load order:
@@ -31,12 +45,42 @@ python = "3.14.8"
 brew_bundle = "HOMEBREW_NO_AUTO_UPDATE=1 brew bundle install --file"
 state_dir = "{{ xdg_state_home }}/dev-machine-setup"
 issues = "{{ xdg_state_home }}/dev-machine-setup/bootstrap-issues"
+git_name = "Adam Bulmer"
+git_email = "github@mintuz.com"
+shell_block = "{{ config_root }}/scripts/shell-block.sh"
 
 [bootstrap.hooks.pre-packages]
 run = [
   'mkdir -p "{{ vars.state_dir }}" && rm -f "{{ vars.issues }}"',
   '{{ vars.brew_bundle }}="{{ config_root }}/packages/shared/Brewfile.cli"',
 ]
+
+# Oh My Zsh before the repos phase clones its plugin. The upstream installer
+# only clones when the directory is missing; the flags keep it from changing
+# the login shell, replacing ~/.zshrc or starting a shell.
+[bootstrap.hooks.pre-repos]
+run = '''
+if [ ! -d "$HOME/.oh-my-zsh" ]; then
+  installer="$(mktemp "${TMPDIR:-/tmp}/ohmyzsh-install.XXXXXX")"
+  trap 'rm -f "$installer"' EXIT
+  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+    --output "$installer" https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh
+  RUNZSH=no CHSH=no KEEP_ZSHRC=yes sh "$installer"
+fi
+'''
+
+# Git identity and defaults after the global ignore file is in place. Every
+# line is idempotent; `git config` rewrites the same value.
+[bootstrap.hooks.post-dotfiles]
+run = '''
+git config --global user.email "{{ vars.git_email }}"
+git config --global user.name "{{ vars.git_name }}"
+git config --global pull.rebase true
+git config --global core.excludesfile '~/.global_gitignore'
+git config --global fetch.prune true
+git config --global init.defaultBranch main
+git config --global push.autoSetupRemote true
+'''
 
 [bootstrap.hooks.final]
 run = '''
@@ -49,7 +93,9 @@ fi
 '''
 
 # Pass options after the task name, for example `mise run cli --profile work`.
-# `setup` and `bootstrap-only` accept the install.sh arguments.
+# `setup` and `bootstrap-only` accept the install.sh arguments. The other
+# tasks run `mise -E <profile> bootstrap` for a set of parts; hooks of a
+# selected part run with it.
 
 [tasks.setup]
 description = "First-run setup: prompts, bootstrap, then configure everything"
@@ -57,65 +103,70 @@ run = "./install.sh"
 raw = true
 
 [tasks.bootstrap-only]
-description = "Install prerequisites and shell activation without full setup"
+description = "Install prerequisites, private directories, the login shell and shell activation without full setup"
 run = "./install.sh --bootstrap-only"
 raw = true
 
 [tasks.install]
-description = "Configure everything for the profile (no bootstrap or prompts)"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py install --mise "{{ mise_bin }}"'
+description = "Apply every bootstrap part for the profile (no prerequisites, prompts or SSH)"
+usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+run = 'scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --yes'
 raw = true
 
 [tasks.packages]
-description = "Preview the selected Brewfiles, tools link and mise tools without changes"
+description = "Preview every bootstrap part for the profile without changes"
 usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
 run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --dry-run'
 raw = true
 
 [tasks.cli]
-description = "Install every selected Brewfile (CLI, GUI and App Store), the tools link and every mise tool"
+description = "Install every selected Brewfile (CLI, GUI and App Store), fzf integration, the managed files and every mise tool"
 usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
 run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only packages,dotfiles,tools,final-hook --yes'
 raw = true
 
-[tasks.fzf]
-description = "Install fzf key bindings and completion"
-run = 'python scripts/setup.py fzf --mise "{{ mise_bin }}"'
-raw = true
-
-[tasks.osx]
-description = "Apply macOS preferences"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py osx --mise "{{ mise_bin }}"'
-raw = true
-
-[tasks.dock]
-description = "Lay out the macOS Dock"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py dock --mise "{{ mise_bin }}"'
-raw = true
-
-[tasks.dotfiles]
-description = "Install or refresh the external dotfiles"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py dotfiles --mise "{{ mise_bin }}"'
-raw = true
-
 [tasks.git]
-description = "Install Git and apply global Git settings"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py git --mise "{{ mise_bin }}"'
+description = "Copy the global Git ignore file and apply the global Git settings"
+usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only dotfiles --yes'
 raw = true
 
 [tasks.zsh]
-description = "Set the login shell and install oh-my-zsh"
-run = 'scripts/with-sudo-askpass.sh python scripts/setup.py zsh --mise "{{ mise_bin }}"'
+description = "Set the login shell, install Oh My Zsh and its plugin, refresh the shell blocks (also refreshes ~/.dotfiles)"
+usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+run = 'scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only repos,user --yes'
 raw = true
+
+[tasks.dotfiles]
+description = "Clone or fast-forward the external dotfiles and run their installer"
+usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+run = '"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only repos,task --yes'
+raw = true
+
+[tasks.osx]
+description = "Apply the macOS preferences, Library visibility, update check and Dock layout"
+usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+run = 'scripts/with-sudo-askpass.sh "{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}}" bootstrap --only macos-defaults --yes'
+raw = true
+
+[tasks.ssh]
+description = "Configure SSH for the 1Password agent (keeps the previous ~/.ssh/config in mise history)"
+usage = 'flag "--profile <profile>" help="personal or work (default personal; also DEVSETUP_PROFILE)"'
+run = '''
+if [ -f "$HOME/.ssh/config" ]; then "{{ mise_bin }}" dot track --yes "$HOME/.ssh/config"; fi
+"{{ mise_bin }}" -E "${usage_profile:-${DEVSETUP_PROFILE:-personal}},ssh" bootstrap --only files,dotfiles --yes
+'''
+raw = true
+
+# Runs as the last step of `mise bootstrap`, after the tools are installed.
+# The external installer owns its own backups and conflict handling.
+[tasks.bootstrap]
+hide = true
+run = '"$HOME/.dotfiles/install.sh"'
 
 [tasks.update]
 description = "Update Homebrew packages, mise tools, npm/pnpm globals, App Store apps and Ollama models"
 run = 'MISE_BIN="{{ mise_bin }}" scripts/update.sh'
-raw = true
-
-[tasks.ssh]
-description = "Back up and configure SSH for the 1Password agent"
-run = 'python scripts/setup.py ssh --mise "{{ mise_bin }}"'
 raw = true
 
 [tasks.remote-login-check]

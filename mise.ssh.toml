@@ -1,0 +1,15 @@
+# Managed SSH client configuration for the 1Password agent. Loaded only with
+# `-E <profile>,ssh`: install.sh adds `ssh` after the consent prompt and
+# `mise run ssh` adds it without a prompt. templates/ssh_config renders the
+# agent socket from the platform file's `vars.ssh_agent_socket` and picks the
+# primary GitHub key from the profile. The public keys live in this
+# repository's .ssh/ directory; never add private keys there. mise keeps
+# the previous ~/.ssh/config in its history when install.sh tracked it.
+[vars]
+personal_public_key = "personal_github.pub"
+work_public_key = "work_github.pub"
+
+[dotfiles]
+"~/.ssh/config" = { source = "templates/ssh_config", mode = "template", permissions = "0600" }
+"~/.ssh/personal_github.pub" = { source = ".ssh/personal_github.pub", mode = "copy", permissions = "0600" }
+"~/.ssh/work_github.pub" = { source = ".ssh/work_github.pub", mode = "copy", permissions = "0600" }

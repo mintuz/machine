@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check config selection, action routing, the installer prompts, and host configuration.
+"""Check config selection, Remote Login action routing and the installer prompts and hand-off.
 
 Everything runs in temporary directories with substitute commands: no sudo,
 network, package installs, or changes to this machine.
@@ -17,7 +17,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "scripts"))
-from devsetup import cli, config as config_module, host  # noqa: E402
+from devsetup import cli, config as config_module  # noqa: E402
 from devsetup.config import ConfigError  # noqa: E402
 
 FAKE_MISE = "/opt/fake/bin/mise"
@@ -37,19 +37,6 @@ def command(directory, name, body):
     path.write_text("#!/bin/sh\n" + body + "\n")
     path.chmod(0o755)
     return path
-
-
-@contextlib.contextmanager
-def environment(**values):
-    saved = dict(os.environ)
-    for variable in ("SUDO_ASKPASS", "GIT_CONFIG_GLOBAL", "GIT_DIR", "GIT_WORK_TREE"):
-        os.environ.pop(variable, None)
-    os.environ.update(values)
-    try:
-        yield
-    finally:
-        os.environ.clear()
-        os.environ.update(saved)
 
 
 # Config selection -----------------------------------------------------------
@@ -76,21 +63,13 @@ with tempfile.TemporaryDirectory() as directory:
             config = load(system, machine, profile=profile)
             assert config["platform"] == platform and config["profile"] == profile
             assert config["home"] == str(real_home) and config["repo_dir"] == str(root)
-            socket = ("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-                      if platform == "mac" else ".1password/agent.sock")
-            assert config["ssh_agent_socket"] == f"{real_home}/{socket}", config["ssh_agent_socket"]
-            assert config["shell_path"] == ("/bin/zsh" if platform == "mac" else "/usr/bin/zsh")
             assert config["brew_prefix"] == ("/opt/homebrew" if platform == "mac" else "/home/linuxbrew/.linuxbrew")
             assert ("tailscale_cli" in config) == ("remote_login_sshd_file" in config) == (platform == "mac")
-            flagged = load(system, machine, profile=profile,
-                           flags={"ssh": True, "dotfiles": False})
-            assert flagged["steps"]["ssh"] is True and flagged["steps"]["dotfiles"] is False
+            assert config["steps"] == {"remote-login": False} and config["revoke_remote_login"] is False
+            flagged = load(system, machine, profile=profile, flags={"remote-login": True})
+            assert flagged["steps"]["remote-login"] is True
             print(f"PASS: {platform}/{profile} ({machine}) selects its defaults and per-run overrides")
     assert load()["profile"] == "personal"
-    forwarded = {"HOME": str(home), "SSH_AUTH_SOCK": "/tmp/session-specific-agent"}
-    assert load("Linux", "aarch64", environ=forwarded)["ssh_agent_socket"] == "SSH_AUTH_SOCK"
-    assert load(environ=forwarded)["ssh_agent_socket"].endswith("/t/agent.sock")
-    print("PASS: Ubuntu uses the forwarded agent variable rather than a session-specific socket path")
 
     expect_error("Unsupported profile", load, profile="../personal")
     expect_error("Unsupported profile", load, environ={"HOME": str(home), "DEVSETUP_PROFILE": "staging"})
@@ -108,43 +87,37 @@ with tempfile.TemporaryDirectory() as directory:
     print("PASS: unsupported OS, distribution, architecture, root, and relative mise are rejected")
 
     override = fixture / "local.toml"
-    override.write_text('git_name = "Override Name"\nremote_login_sshd = ["/fake/sshd", "-f", "x"]\n'
-                        'custom_note = "kept"\n'
+    override.write_text('remote_login_sshd = ["/fake/sshd", "-f", "x"]\ncustom_note = "kept"\n'
                         '[linux]\nbrew_prefix = "~/custom-brew"\n[mac]\ntailscale_cli = "/fake/tailscale"\n')
     merged = load("Linux", "aarch64", override=override)
-    assert merged["git_name"] == "Override Name" and merged["custom_note"] == "kept"
+    assert merged["custom_note"] == "kept"
     assert merged["brew_prefix"] == f"{real_home}/custom-brew" and "tailscale_cli" not in merged
     assert merged["remote_login_sshd"] == ["/fake/sshd", "-f", "x"]
     assert load(override=override)["tailscale_cli"] == "/fake/tailscale"
-    for text, message in (("git_name = [", "Invalid TOML"), ('remote_login_sources = "100.64.0.0/10"', "list"),
-                          ("[steps]\ndotfiles = 'yes'", "true or false"), ('home = "/tmp"', "cannot be set"),
+    for text, message in (("brew_prefix = [", "Invalid TOML"), ('remote_login_sources = "100.64.0.0/10"', "list"),
+                          ("[steps]\nremote-login = 'yes'", "true or false"),
+                          ("[steps]\ndotfiles = true", "unknown step"), ('home = "/tmp"', "cannot be set"),
                           ('machine_type = "work"', "cannot be set"), ('profile = "work"', "cannot be set"),
                           ('[linux]\nprofile = "work"', "cannot be set"),
                           ("remote_login_sudo = []", "cannot be set"),
                           ("[linux]\nremote_login_port = 2222", "cannot be set"),
-                          ('[linux]\nshell_path = "zsh"', "absolute")):
+                          ('[linux]\nbrew_prefix = "brew"', "absolute")):
         override.write_text(text + "\n")
         expect_error(message, load, "Linux", "aarch64", override=override)
     expect_error("Cannot read settings file", load, override=fixture / "missing.toml")
-    override.write_text('[steps]\nfzf = true\ndock = false\n[mac.steps]\ndock = true\nosx = false\n')
-    selected = load(override=override, flags={"fzf": False})
-    assert selected["steps"]["dock"] and not selected["steps"]["osx"]
-    assert not selected["steps"]["fzf"], "explicit skip must win over the override file"
-    assert load(override=override)["steps"]["fzf"]
-    override.write_text('[mac]\nmacos_preferences = [["domain", "key"]]\n')
-    expect_error("domain, key and value", load, override=override)
-    override.write_text('[mac]\ndock_items = [["relative.app"]]\n')
-    expect_error("absolute path", load, override=override)
+    override.write_text('[steps]\nremote-login = true\n[linux.steps]\nremote-login = false\n')
+    assert load(override=override)["steps"]["remote-login"]
+    assert not load("Linux", "aarch64", override=override)["steps"]["remote-login"]
+    assert not load(override=override, flags={"remote-login": False})["steps"]["remote-login"], \
+        "an explicit flag must win over the override file"
     print("PASS: the override file merges per platform, steps merge by key with explicit precedence, "
           "and malformed settings stop before changes")
 
 
 # Contradictory explicit choices must fail rather than silently turn into no-ops.
-for argv in (["dotfiles", "--skip-dotfiles"], ["install", "--keep-ssh", "--1password-ssh"],
-             ["install", "--profile", "staging"], ["make"], ["install", "--skip", "preflight"],
-             ["install", "--skip", "ssh", "--1password-ssh"], ["fzf", "--skip", "fzf"],
-             ["fzf", "--skip", "dotfiles"], ["fzf", "--revoke-remote-login"],
-             ["install", "--skip"]):
+for argv in (["remote-login", "--keep-remote-login"], ["remote-login", "--profile", "staging"], ["install"],
+             ["ssh"], ["remote-login-check", "--revoke-remote-login"], ["remote-login", "--skip", "ssh"],
+             ["remote-login", "--config"]):
     with open(os.devnull, "w") as quiet, contextlib.redirect_stderr(quiet):
         try:
             cli.parse_args(argv)
@@ -168,41 +141,44 @@ with tempfile.TemporaryDirectory() as directory:
     (fixture / "scripts/bootstrap-macos.sh").write_text('echo "os-bootstrap:macos"\n')
     (fixture / "scripts/bootstrap-ubuntu.sh").write_text('echo "os-bootstrap:ubuntu"\n')
     (fixture / "scripts/bootstrap-homebrew.sh").write_text(":\n")
-    (fixture / "scripts/bootstrap-mise.sh").write_text(
-        'mise_bin="$repo_dir/bin/mise"\npython_bin="$repo_dir/bin/python"\n')
+    (fixture / "scripts/bootstrap-mise.sh").write_text('mise_bin="$repo_dir/bin/mise"\n')
     (fixture / "bin").mkdir()
-    command(fixture / "bin", "python", 'shift; echo "python: $*"')
     command(fixture / "bin", "mise", 'echo "mise: $*"')
-    command(fixture / "scripts", "with-sudo-askpass.sh", 'echo "wrapper: $*"')
+    command(fixture / "scripts", "with-sudo-askpass.sh", 'echo "wrapper: $*"; exec "$@"')
     command(fixture / "bin", "uname", '''case "$1" in
   -m) printf '%s\\n' "${TEST_MACHINE:-arm64}" ;;
   *) printf '%s\\n' "${TEST_SYSTEM:-Darwin}" ;;
 esac''')
-    env = dict(os.environ, PATH=str(fixture / "bin") + os.pathsep + os.environ["PATH"])
-    for variable in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
+    home = fixture / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh/config").write_text("# existing SSH configuration\n")
+    env = dict(os.environ, PATH=str(fixture / "bin") + os.pathsep + os.environ["PATH"], HOME=str(home))
+    for variable in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "DEVSETUP_PROFILE"):
         env.pop(variable, None)
 
-    def setup_line(stdout):
-        lines = [line for line in stdout.splitlines() if line.startswith("wrapper: ")]
-        assert len(lines) <= 1, stdout
-        return lines[0].split() if lines else None
+    def mise_lines(stdout):
+        return [line for line in stdout.splitlines() if line.startswith("mise: ")]
 
     cases = [
-        ("Darwin", [], None),
-        ("Darwin", [], "y\n"),
-        ("Darwin", [], "n\n"),
-        ("Darwin", [], "\n"),
-        ("Darwin", [], "maybe\nyes\n"),
-        ("Darwin", ["--1password-ssh"], None),
-        ("Darwin", ["--keep-ssh", "--skip-dotfiles"], None),
-        ("Linux", [], None),
-        ("Linux", [], "n\n\n"),
-        ("Linux", [], "y\nn\n"),
-        ("Linux", [], "n\nmaybe\ny\n"),
-        ("Linux", ["--keep-ssh", "--skip-dotfiles"], None),
-        ("Linux", ["--1password-ssh", "--dotfiles"], None),
+        ("Darwin", [], None, "work bootstrap --yes", False),
+        ("Darwin", [], "y\n", "work,ssh bootstrap --yes", True),
+        ("Darwin", [], "n\n", "work bootstrap --yes", False),
+        ("Darwin", [], "\n", "work bootstrap --yes", False),
+        ("Darwin", [], "maybe\nyes\n", "work,ssh bootstrap --yes", True),
+        ("Darwin", ["--1password-ssh"], None, "work,ssh bootstrap --yes", True),
+        ("Darwin", ["--keep-ssh", "--skip-dotfiles"], None, "work bootstrap --yes --skip repos,task", False),
+        ("Darwin", ["--skip", "cli", "--skip", "osx", "--skip", "zsh"], None,
+         "work bootstrap --yes --skip packages,tools,macos-defaults,user", False),
+        ("Linux", [], None, "work bootstrap --yes", False),
+        ("Linux", [], "n\n\n", "work bootstrap --yes", False),
+        ("Linux", [], "y\nn\n", "work,ssh bootstrap --yes --skip repos,task", True),
+        ("Linux", [], "n\nmaybe\ny\n", "work bootstrap --yes", False),
+        ("Linux", ["--keep-ssh", "--skip-dotfiles"], None, "work bootstrap --yes --skip repos,task", False),
+        ("Linux", ["--1password-ssh", "--dotfiles"], None, "work,ssh bootstrap --yes", True),
+        ("Linux", ["--skip", "ssh", "--skip", "dotfiles", "--skip", "gui"], None,
+         "work bootstrap --yes --skip packages,repos,task", False),
     ]
-    for system, args, answer in cases:
+    for system, args, answer, expected, tracks in cases:
         env["TEST_SYSTEM"] = system
         master, slave = pty.openpty()
         try:
@@ -214,7 +190,11 @@ esac''')
             stdout, stderr = process.communicate(timeout=15)
             assert process.returncode == 0, stdout + stderr
             assert ("os-bootstrap:macos" if system == "Darwin" else "os-bootstrap:ubuntu") in stdout, stdout
-            assert "mise: -E work bootstrap --yes" in stdout, stdout
+            lines = mise_lines(stdout)
+            assert lines[-1] == f"mise: -E {expected}", (args, answer, lines)
+            assert f"wrapper: {fixture}/bin/mise -E {expected}" in stdout, stdout
+            # SSH opt-in keeps the existing client configuration in mise history first.
+            assert (f"mise: dot track --yes {home}/.ssh/config" in lines) == tracks, (args, answer, lines)
             if system == "Linux" and answer is not None:
                 assert "[Y/n]" in stderr, stderr
             if answer is not None:
@@ -224,256 +204,38 @@ esac''')
             os.close(slave)
 
     env["TEST_SYSTEM"] = "Darwin"
-    result = subprocess.run(["bash", str(installer), "--bootstrap-only", "--1password-ssh"],
-                            env=env, text=True, capture_output=True)
-    assert result.returncode == 0
-    assert setup_line(result.stdout) is None and "bootstrap --yes" not in result.stdout
+    for args in (["--bootstrap-only"], ["--bootstrap-only", "--1password-ssh"]):
+        result = subprocess.run(["bash", str(installer), *args], env=env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert mise_lines(result.stdout) == ["mise: -E personal bootstrap --only files,user --yes"], result.stdout
+        assert "[y/N]" not in result.stderr
     shutil.copy(root / "new-mac.sh", fixture / "new-mac.sh")
     result = subprocess.run(["bash", str(fixture / "new-mac.sh"), "--keep-ssh"],
-                            env=env, text=True, capture_output=True)
-    assert result.returncode == 0
-    assert setup_line(result.stdout) is None
-    for system, machine in (("Linux", "x86_64"),):
-        result = subprocess.run(["bash", str(installer), "--keep-ssh"], text=True, capture_output=True,
-                                env=dict(env, TEST_SYSTEM=system, TEST_MACHINE=machine))
-        assert result.returncode == 1 and "ARM64" in result.stderr and "os-bootstrap" not in result.stdout
+                            env=dict(env, DEVSETUP_PROFILE="work"), text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert mise_lines(result.stdout) == ["mise: -E work bootstrap --only files,user --yes"], result.stdout
+    result = subprocess.run(["bash", str(installer), "--keep-ssh"], text=True, capture_output=True,
+                            env=dict(env, TEST_SYSTEM="Linux", TEST_MACHINE="x86_64"))
+    assert result.returncode == 1 and "ARM64" in result.stderr and "os-bootstrap" not in result.stdout
     (fixture / "os-release").write_text("ID=fedora\n")
     result = subprocess.run(["bash", str(installer), "--keep-ssh"], text=True, capture_output=True,
                             env=dict(env, TEST_SYSTEM="Linux", TEST_MACHINE="aarch64"))
     assert result.returncode == 1 and "Only Ubuntu" in result.stderr and "os-bootstrap" not in result.stdout
-    print("PASS: startup SSH/dotfiles prompts, defaults, opt-outs, ARM64/Ubuntu guards, and bootstrap-only mode")
+    print("PASS: startup SSH/dotfiles prompts, defaults, opt-outs, --skip mapping, ARM64/Ubuntu guards, "
+          "and bootstrap-only mode")
 
 
-# Host configuration in an isolated home -------------------------------------
-if shutil.which("git") is None:
-    print("SKIP: host configuration checks need git")
-    sys.exit(0)
-
-with tempfile.TemporaryDirectory() as directory:
-    fixture = Path(directory).resolve()
-    (fixture / "os-release").write_text("ID=ubuntu\n")
-    binary = fixture / "bin"
-    binary.mkdir()
-    calls = fixture / "calls"
-    calls.write_text("")
-    fzf_root = fixture / "opt/fzf"
-    fzf_root.mkdir(parents=True)
-    command(fzf_root, "install", f'echo "fzf-install $*" >> "{calls}"')
-    mise = command(binary, "mise", f'echo "mise $*" >> "{calls}"')
-    brew = command(binary, "brew", f'''case "$1" in
-  list|--version) exit 0 ;;
-  --prefix) printf '%s\\n' "{fixture}"; exit 0 ;;
-esac
-echo "brew $*" >> "{calls}"
-if [ "$1" = update ] && [ "${{TEST_BREW_UPDATE_FAIL:-}}" = 1 ]; then exit 17; fi''')
-    for name in ("sudo", "chflags", "killall"):
-        command(binary, name, f'echo "{name} $*" >> "{calls}"')
-    command(binary, "defaults", f'''if [ "$1" = read ]; then echo "$TEST_UPDATE_CHECK"; exit 0; fi
-echo "defaults $*" >> "{calls}"
-[ "$3" != "${{TEST_FAIL_KEY:-}}" ]''')
-    command(binary, "dockutil", f'''echo "dockutil $*" >> "{calls}"
-case "$2" in */Warp.app) exit 1 ;; esac''')
-
-    def isolated(name, platform="linux", **settings):
-        home = fixture / name
-        home.mkdir()
-        config = config_module.load(
-            repo_dir=root, system="Darwin" if platform == "mac" else "Linux", machine="arm64",
-            os_release=Path("/dev/null") if platform == "mac" else fixture / "os-release",
-            environ={"HOME": str(home)}, mise=str(mise), user="tester")
-        config.update(brew=str(brew), brew_prefix=str(fixture), shell_path="/bin/zsh",
-                      git_email="tester@example.com", git_name="Test User",
-                      dotfiles_conflict_paths=[".agents/.skill-lock.json"], **settings)
-        env = {"HOME": str(home), "PATH": f"{binary}{os.pathsep}{os.environ['PATH']}",
-               "GIT_CONFIG_NOSYSTEM": "1", "XDG_CONFIG_HOME": str(home / ".config"),
-               "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.com",
-               "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.com"}
-        return home, config, env
-
-    def recorded():
-        lines = calls.read_text().splitlines()
+# The installer never enables Remote Login; the launcher checks prerequisites ---
+if sys.platform == "darwin" and os.uname().machine == "arm64":
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = Path(directory).resolve()
+        binary = fixture / "bin"
+        binary.mkdir()
+        calls = fixture / "calls"
         calls.write_text("")
-        return lines
-
-    home, config, env = isolated("check-home", "mac", dotfiles_repo=str(fixture / "none"),
-                                 dotfiles_version="master")
-    config["steps"]["ssh"] = True
-    with environment(**env, TEST_UPDATE_CHECK="0"):
-        for action in ("bootstrap", "git", "zsh", "fzf", "osx", "dock", "dotfiles"):
-            host.run(action, config, check=True)
-    assert recorded() == [] and list(home.iterdir()) == [], "check mode ran a command or wrote a file"
-    print("PASS: host check mode reports Git and shell changes without installations or writes")
-
-    home, config, env = isolated("git-home")
-    with environment(**env):
-        host.run("git", config)
-        host.run("git", config)
-        gitconfig = subprocess.run(["git", "config", "--global", "--list"], text=True, capture_output=True,
-                                   check=True).stdout.splitlines()
-    assert (home / ".global_gitignore").stat().st_mode & 0o777 == 0o644
-    for setting in ("user.email=tester@example.com", "user.name=Test User", "pull.rebase=true",
-                    "core.excludesfile=~/.global_gitignore", "fetch.prune=true", "init.defaultbranch=main",
-                    "push.autosetupremote=true"):
-        assert setting in gitconfig, gitconfig
-    print("PASS: Git gets the latest formula, global ignore file, identity, and defaults idempotently")
-
-    home, config, env = isolated("shell-home")
-    (home / ".bashrc").write_text("# existing bash settings\n")
-    dotfiles_zshrc = fixture / "external-dotfiles-zshrc"
-    dotfiles_zshrc.write_text("# external dotfiles zshrc\n")
-    (home / ".zshrc").symlink_to(dotfiles_zshrc)
-    with environment(**env):
-        host.run("bootstrap", config)
-        host.run("bootstrap", config)
-        host.run("fzf", config)
-    bashrc = (home / ".bashrc").read_text()
-    assert bashrc.startswith("# existing bash settings\n") and bashrc.count("# BEGIN dev-machine mise") == 1
-    assert dotfiles_zshrc.read_text() == "# external dotfiles zshrc\n", "setup edited an external shell file"
-    assert (home / ".ssh").is_dir() and (home / ".gnupg").is_dir()
-    lines = recorded()
-    assert not any("1password" in line for line in lines)
-    assert lines[-1] == "fzf-install --key-bindings --completion --no-update-rc", lines
-    print("PASS: bootstrap and fzf activate mise and shell integration without editing symlinked dotfiles")
-
-    home, config, env = isolated("mac-home", "mac")
-    config["macos_preferences"] = [["example.preferences", "Path", "-string", "{home}/custom"],
-                                 ["example.preferences", "Literal", "-string", "{literal}"]]
-    with environment(**env, TEST_UPDATE_CHECK="0"):
-        host.run("osx", config)
-    lines = recorded()
-    assert f"defaults write example.preferences Path -string {home}/custom" in lines
-    assert "defaults write example.preferences Literal -string {literal}" in lines
-    assert f"chflags nohidden {home}/Library" in lines
-    assert ("sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -int 1"
-            in lines) and lines[-1] == "killall Finder"
-    with environment(**env, TEST_UPDATE_CHECK="1"):
-        host.run("osx", config)
-    assert not any(line.startswith("sudo") for line in recorded()), "sudo ran with the preference already set"
-    with environment(**env, TEST_UPDATE_CHECK="1", TEST_FAIL_KEY="Path"):
-        expect_error("Path", host.run, "osx", config)
-    assert "killall Finder" not in recorded()
-    config["macos_preferences"] = []
-    with environment(**env, TEST_UPDATE_CHECK="1"):
-        host.run("osx", config)
-    assert not any(line.startswith("defaults write") for line in recorded())
-    config["dock_items"] = []
-    with environment(**env):
-        host.run("dock", config)
-    assert recorded() == [], "empty Dock policy must leave the existing Dock untouched"
-    config["dock_items"] = [["/Applications/Warp.app"], ["/Applications/Fixture.app"]]
-    with environment(**env):
-        host.run("dock", config)
-    lines = recorded()
-    dock = [line for line in lines if line.startswith(("dockutil", "killall"))]
-    assert dock[0] == "dockutil --remove all --no-restart" and dock[-1] == "killall Dock"
-    assert "dockutil --add /Applications/Warp.app --no-restart" in dock
-    assert dock[-2] == "dockutil --add /Applications/Fixture.app --no-restart"
-    print("PASS: macOS defaults stop on failure and use sudo only for the update check; Dock skips missing apps")
-
-    # A local upstream stands in for the dotfiles repository.
-    home, config, env = isolated("dotfiles-home")
-    upstream = fixture / "upstream"
-    with environment(**env):
-        def git(*args, cwd=upstream):
-            return subprocess.run(["git", *args], cwd=cwd, check=True, text=True, capture_output=True).stdout.strip()
-        upstream.mkdir()
-        git("init", "-q", "-b", "master")
-        command(upstream, "install.sh", 'printf "# Managed by the fixture installer\\n" >> "$HOME/.zshrc"')
-        git("add", "install.sh")
-        git("commit", "-qm", "first")
-        first = git("rev-parse", "HEAD")
-        conflict = home / ".agents/.skill-lock.json"
-        conflict.parent.mkdir()
-        conflict.write_text("local lock")
-        config.update(dotfiles_repo=str(upstream))
-        host.run("dotfiles", config)
-
-        def refused_install(message):
-            (home / ".zshrc").write_text("# User's local shell settings\n")
-            shell_before = (home / ".zshrc").read_bytes()
-            expect_error(message, host.run, "dotfiles", config)
-            assert (home / ".zshrc").read_bytes() == shell_before, "a refused checkout changed shell configuration"
-
-        checkout = home / ".dotfiles"
-        assert not conflict.exists()
-        backups = list((home / ".dev-setup-backups").glob("*/dotfiles/.agents/.skill-lock.json"))
-        assert [backup.read_text() for backup in backups] == ["local lock"]
-        original_head = git("rev-parse", "HEAD", cwd=checkout)
-        original_origin = git("config", "--get", "remote.origin.url", cwd=checkout)
-        fetch_file = checkout / ".git/FETCH_HEAD"
-        fetch_head = fetch_file.read_bytes() if fetch_file.exists() else None
-        config["dotfiles_repo"] = str(fixture / "different-upstream")
-        refused_install("does not match")
-        assert git("rev-parse", "HEAD", cwd=checkout) == original_head
-        assert git("config", "--get", "remote.origin.url", cwd=checkout) == original_origin
-        assert (fetch_file.read_bytes() if fetch_file.exists() else None) == fetch_head
-        config["dotfiles_repo"] = upstream.as_uri()
-        host.run("dotfiles", config)
-        config["dotfiles_repo"] = str(upstream)
-        (upstream / "second").write_text("2")
-        git("add", "second")
-        git("commit", "-qm", "second")
-        conflict.write_text("new local lock")
-        (checkout / "nested").mkdir()
-        (checkout / "nested/.DS_Store").write_text("Finder metadata")
-        host.run("dotfiles", config)
-        assert git("rev-parse", "HEAD", cwd=checkout) == git("rev-parse", "HEAD")
-        assert not (checkout / "nested/.DS_Store").exists(), "macOS metadata was left for stow"
-        assert len(list((home / ".dev-setup-backups").iterdir())) == 2, "a later backup overwrote an earlier one"
-        (checkout / "second").write_text("local edit")
-        refused_install("local changes")
-        assert (checkout / "second").read_text() == "local edit"
-        git("checkout", "--", "second", cwd=checkout)
-        (checkout / "mine").write_text("mine")
-        git("add", "mine", cwd=checkout)
-        git("commit", "-qm", "local work", cwd=checkout)
-        local = git("rev-parse", "HEAD", cwd=checkout)
-        (upstream / "third").write_text("3")
-        git("add", "third")
-        git("commit", "-qm", "third")
-        refused_install("diverged")
-        assert git("rev-parse", "HEAD", cwd=checkout) == local, "setup discarded a local commit"
-        config["dotfiles_version"] = first
-        host.run("dotfiles", config)
-        assert git("rev-parse", "HEAD", cwd=checkout) == first
-        assert git("rev-parse", "master", cwd=checkout) == local, "pinning discarded the local branch"
-        (checkout / "detached-work").write_text("preserve me")
-        git("add", "detached-work", cwd=checkout)
-        git("commit", "-qm", "detached local work", cwd=checkout)
-        detached = git("rev-parse", "HEAD", cwd=checkout)
-        refused_install("detached commits")
-        config["dotfiles_version"] = "master"
-        refused_install("detached commits")
-        config["dotfiles_version"] = first
-        assert git("rev-parse", "HEAD", cwd=checkout) == detached
-        assert (checkout / "detached-work").read_text() == "preserve me"
-        git("branch", "keep-detached", cwd=checkout)
-        host.run("dotfiles", config)
-        assert git("rev-parse", "HEAD", cwd=checkout) == first
-        assert git("rev-parse", "keep-detached", cwd=checkout) == detached
-        shutil.rmtree(checkout)
-        host.run("dotfiles", config)
-        assert git("rev-parse", "HEAD", cwd=checkout) == first
-    print("PASS: dotfiles clone, fast-forward, pin, back up conflicts uniquely, and never discard local work")
-
-    home, config, env = isolated("preflight-home")
-    with environment(**{**env, "PATH": str(binary)}):
-        expect_error("Required command 'git'", host.run, "preflight", config)
-    print("PASS: setup preflight requires git and curl before changes")
-    override = fixture / "failed-refresh.toml"
-    override.write_text(f"brew = {json.dumps(str(brew))}\n")
-    result = subprocess.run(
-        [sys.executable, str(root / "scripts/setup.py"), "install", "--1password-ssh", "--skip-dotfiles",
-         "--config", str(override), "--mise", str(mise)],
-        env={**os.environ, **env, "DEVSETUP_PROFILE": "personal", "TEST_BREW_UPDATE_FAIL": "1"},
-        text=True, capture_output=True,
-    )
-    assert result.returncode == 1 and "update" in result.stderr, result.stdout + result.stderr
-    assert list(home.iterdir()) == [], "a failed Homebrew refresh changed SSH or host configuration"
-    print("PASS: a failed Homebrew refresh stops full setup before managed SSH or host writes")
-
-    if sys.platform == "darwin" and os.uname().machine == "arm64":
-        home, config, env = isolated("initial-installer-home", "mac")
+        mise = command(binary, "mise", f'echo "mise $*" >> "{calls}"')
+        home = fixture / "home"
+        home.mkdir()
         repo = fixture / "installer-repo"
         repo.mkdir()
         shutil.copytree(root / "scripts", repo / "scripts")
@@ -481,8 +243,7 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
             shutil.copy(root / name, repo / name)
         for name in ("bootstrap-macos.sh", "bootstrap-homebrew.sh"):
             (repo / "scripts" / name).write_text(":\n")
-        (repo / "scripts/bootstrap-mise.sh").write_text(
-            f"mise_bin={shlex.quote(str(mise))}\npython_bin={shlex.quote(sys.executable)}\n")
+        (repo / "scripts/bootstrap-mise.sh").write_text(f"mise_bin={shlex.quote(str(mise))}\n")
         command(repo / "scripts", "with-sudo-askpass.sh", 'exec "$@"')
         (home / ".ssh").mkdir()
         keys = home / ".ssh/authorized_keys"
@@ -491,30 +252,16 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         service.write_text("unchanged")
         launchctl = command(binary, "launchctl-fixture", f'echo changed > "{service}"; exit 99')
         policy = fixture / "remote choice.toml"
-        policy.write_text(
-            f"brew = {json.dumps(str(brew))}\nbrew_prefix = {json.dumps(str(fixture))}\n"
-            f"remote_login_launchctl = {json.dumps(str(launchctl))}\n"
-            'remote_login_public_keys = ["not-prepared.pub"]\n[steps]\n' +
-            "\n".join(f'{name} = {"true" if name == "remote-login" else "false"}'
-                      for name in config_module.STEPS) + "\n")
-        process_env = {**os.environ, **env, "DEVSETUP_PROFILE": "personal",
-                       "MISE_ORIGINAL_CWD": str(fixture)}
+        policy.write_text(f"remote_login_launchctl = {json.dumps(str(launchctl))}\n"
+                          'remote_login_public_keys = ["not-prepared.pub"]\n[steps]\nremote-login = true\n')
+        process_env = {**os.environ, "HOME": str(home), "PATH": f"{binary}{os.pathsep}{os.environ['PATH']}",
+                       "DEVSETUP_PROFILE": "personal", "MISE_ORIGINAL_CWD": str(fixture)}
         for name in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
             process_env.pop(name, None)
-        master, slave = pty.openpty()
-        try:
-            process = subprocess.Popen(
-                [str(repo / "install.sh"), "--keep-ssh", "--config", policy.name],
-                stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, cwd=fixture, env=process_env)
-            stdout, stderr = process.communicate(timeout=30)
-            assert process.returncode == 0, stdout + stderr
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.communicate()
-            os.close(master)
-            os.close(slave)
+        result = subprocess.run([str(repo / "install.sh"), "--keep-ssh"], stdin=subprocess.DEVNULL,
+                                cwd=fixture, env=process_env, text=True, capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert calls.read_text().splitlines() == ["mise -E personal bootstrap --yes"], calls.read_text()
         assert keys.read_text() == "preserve existing authorised keys\n"
         assert service.read_text() == "unchanged"
         # Execute the real dispatcher through the launcher, without installing mise/Python.
@@ -524,5 +271,5 @@ case "$2" in */Warp.app) exit 1 ;; esac''')
         assert result.returncode == 1 and "not-prepared.pub" in result.stderr, result.stdout + result.stderr
         assert keys.read_text() == "preserve existing authorised keys\n"
         assert service.read_text() == "unchanged"
-        print("PASS: interactive installation needs no Remote Login answer or prerequisites; "
+        print("PASS: installation hands everything to mise bootstrap without Remote Login; "
               "the separate launcher checks prerequisites before changing access")

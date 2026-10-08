@@ -240,9 +240,7 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run(["/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "phone",
                     "-f", str(keys / "phone")], check=True)
     phone_line = (keys / "phone.pub").read_text().strip()
-    fixtures = {"personal.pub": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPersonal personal\n",
-                "work.pub": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIWork work\n",
-                "phone.pub": phone_line + "\n",
+    fixtures = {"phone.pub": phone_line + "\n",
                 "options.pub": 'command="true" ' + phone_line + "\n",
                 "two.pub": phone_line + "\n" + phone_line + "\n",
                 "private.pub": (keys / "phone").read_text()}
@@ -272,14 +270,10 @@ with tempfile.TemporaryDirectory() as directory:
     managed = fixture / "etc/sshd_config.d/010-remote-login.conf"
     managed.parent.mkdir(parents=True)
     base = {"home": str(home), "repo_dir": str(repo), "platform": "mac", "profile": "personal", "user": USER,
-            "shell_path": "/bin/zsh", "ssh_agent_socket": "/tmp/test-agent.sock",
-            "pnpm_home": str(home / "Library/pnpm"), "mise": str(binary / "mise"),
-            "brew_prefix": str(fixture / "brew"),
-            "personal_public_ssh_key": "personal.pub", "work_public_ssh_key": "work.pub",
+            "mise": str(binary / "mise"), "brew_prefix": str(fixture / "brew"),
             "remote_login_public_keys": ["phone.pub"],
             "remote_login_sources": ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
-            "steps": {"ssh": False, "git": True, "cli": True, "remote-login": False, "gui": True,
-                      "zsh": True, "app-store": True, "osx": True, "node": True, "dotfiles": True, "dock": True},
+            "steps": {"remote-login": False},
             "revoke_remote_login": False,
             "remote_login_sshd_file": str(managed), "tailscale_cli": tailscale,
             "remote_login_sshd": [fake_sshd], "remote_login_launchctl": launchctl,
@@ -325,68 +319,13 @@ with tempfile.TemporaryDirectory() as directory:
 
     # Common guards.
     fails(invoke("shields-up"), "Unknown security action")
-    fails(invoke("ssh", user="root", steps={"ssh": True}), "not root")
+    fails(invoke("remote-login", user="root", steps={"remote-login": True}), "not root")
     fails(invoke("remote-login-check", profile="guest"), "Unsupported profile")
     print("PASS: unknown actions, root and invalid profiles are refused")
 
-    # Managed SSH client configuration.
     ssh_dir = home / ".ssh"
-    (ssh_dir / "agent").mkdir(parents=True)
-    (ssh_dir / "agent/placeholder").write_text("agent state\n")
-    (ssh_dir / "config").write_text("# original SSH config\n")
+    ssh_dir.mkdir(parents=True)
     backups = home / ".dev-setup-backups"
-    for system in ("mac", "linux"):
-        succeeds(invoke("ssh", platform=system, env={"SSH_AUTH_SOCK": "/tmp/forwarded-agent"}))
-        assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
-    succeeds(invoke("ssh", check=True, steps={"ssh": True}))
-    assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
-    fails(invoke("ssh", steps={"ssh": True}, personal_public_ssh_key="private.pub"), "private key")
-    fails(invoke("ssh", steps={"ssh": True}, personal_public_ssh_key="missing.pub"), "missing.pub")
-    assert (ssh_dir / "config").read_text() == "# original SSH config\n" and not backups.exists()
-    print("PASS: declined, previewed or invalid managed SSH leaves files and backups untouched on both platforms")
-
-    succeeds(invoke("ssh", steps={"ssh": True}))
-    first = (ssh_dir / "config").read_text()
-    assert 'IdentityAgent "/tmp/test-agent.sock"' in first
-    assert "Host github.com\n  HostName github.com\n  # Downloaded from 1Password App\n" \
-           "  IdentityFile ~/.ssh/personal.pub\n" in first
-    assert "Host github-alt.com\n  HostName github.com\n  # Downloaded from 1Password App\n" \
-           "  IdentityFile ~/.ssh/work.pub\n" in first
-    succeeds(invoke("ssh", steps={"ssh": True}, platform="linux", profile="work",
-                    ssh_agent_socket=str(home / ".1password/agent.sock"),
-                    env={"SSH_AUTH_SOCK": "/tmp/forwarded-agent"}))
-    second = (ssh_dir / "config").read_text()
-    assert 'IdentityAgent "SSH_AUTH_SOCK"' in second and "/tmp/forwarded-agent" not in second
-    assert "  IdentityFile ~/.ssh/work.pub\n  IdentitiesOnly yes\n\nHost github-alt.com" in second
-    runs = sorted(backups.iterdir())
-    assert len(runs) == 2 and all(run.stat().st_mode & 0o777 == 0o700 for run in runs)
-    assert (runs[0] / "ssh/config").read_text() == "# original SSH config\n"
-    assert (runs[1] / "ssh/config").read_text() == first
-    assert not (runs[0] / "ssh/agent").exists(), "The agent directory was copied into a backup"
-    assert ssh_dir.stat().st_mode & 0o777 == 0o700
-    for name in ("config", "personal.pub", "work.pub"):
-        assert (ssh_dir / name).stat().st_mode & 0o777 == 0o600, name
-    assert (ssh_dir / "work.pub").read_text() == fixtures["work.pub"]
-    assert (ssh_dir / "agent/placeholder").read_text() == "agent state\n"
-    succeeds(invoke("ssh", steps={"ssh": True}, platform="linux"))
-    assert 'IdentityAgent "/tmp/test-agent.sock"' in (ssh_dir / "config").read_text()
-    assert len(list(backups.iterdir())) == 3
-    print("PASS: managed SSH keeps unique successive backups, profile keys, private modes and Linux agent forwarding")
-
-    broken_home = fixture / "broken-home"
-    (broken_home / ".ssh").mkdir(parents=True)
-    (broken_home / ".ssh/config").write_text("# original SSH config\n")
-    (broken_home / ".dev-setup-backups").write_text("not a directory\n")
-    fails(invoke("ssh", steps={"ssh": True}, home=str(broken_home)), "Could not back up",
-          "No managed SSH file was changed")
-    assert (broken_home / ".ssh/config").read_text() == "# original SSH config\n"
-    (broken_home / ".dev-setup-backups").unlink()
-    (broken_home / ".ssh/config").unlink()
-    (broken_home / ".ssh/config").mkdir()
-    fails(invoke("ssh", steps={"ssh": True}, home=str(broken_home)), "may be incomplete",
-          "The previous files are in")
-    assert len(list((broken_home / ".dev-setup-backups").glob("*/ssh/config"))) == 1
-    print("PASS: managed SSH backup and write failures are reported with the backup location")
 
     # Remote Login.
     authorized_keys = ssh_dir / "authorized_keys"
