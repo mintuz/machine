@@ -62,13 +62,16 @@ exclude components you do not want.
    ```
 
 2. Review the defaults and prepare any local settings before continuing.
-   For a personal machine, run:
+   Pass the machine's profile on the first run. For a personal machine,
+   run:
 
    ```bash
    ./install.sh personal
    ```
 
-   For a work machine, use `./install.sh work` instead.
+   For a work machine, use `./install.sh work` instead. The installer
+   records the profile in `~/.config/mise/miserc.local.toml`, so later
+   runs (`./install.sh`) and every `mise run` task use it without a flag.
 
 3. Review the SSH and dotfiles choices before bootstrap. The SSH prompt
    defaults to **No**. Ubuntu also asks whether to install dotfiles.
@@ -115,12 +118,12 @@ To prepare the command interface without running full setup:
 ./install.sh --bootstrap-only
 ```
 
-On macOS, `./new-mac.sh` is a shortcut for this operation. It installs the
-prerequisites, then applies only the private directories, the login shell
-and the shell startup blocks. It does not install packages or apps, does
-not configure SSH and does not ask about or install external dotfiles.
-After bootstrap, use the commands below to inspect packages or configure
-selected components.
+This installs the prerequisites, then applies only the private
+directories, the login shell and the shell startup blocks. It does not
+install packages or apps, does not configure SSH, does not ask about or
+install external dotfiles and does not record a profile. After bootstrap,
+use the commands below to inspect packages or configure selected
+components.
 
 ## Command reference
 
@@ -133,9 +136,9 @@ a set of `mise bootstrap` parts for the profile.
 |---|---|
 | `mise run setup personal` | Run the installer, including bootstrap and consent prompts. |
 | `mise run bootstrap-only` | Run bootstrap without full setup. |
-| `mise run packages --profile work` | Show everything full setup would do for the profile, without changes. |
-| `mise run install --profile work` | Apply every part for the profile without prerequisites, prompts or SSH. |
-| `mise run cli --profile work` | Install every selected Brewfile (CLI, GUI and App Store) and the fzf integration, write the managed files and install every mise tool. |
+| `mise run packages` | Show everything full setup would do for the profile, without changes. |
+| `mise run install` | Apply every part for the profile without prerequisites, prompts or SSH. |
+| `mise run cli` | Install every selected Brewfile (CLI, GUI and App Store) and the fzf integration, write the managed files and install every mise tool. |
 | `mise run git` | Copy the global Git ignore file and apply the global Git settings. |
 | `mise run zsh` | Set the login shell, install Oh My Zsh and its plugin and refresh the shell startup blocks (also refreshes `~/.dotfiles`). |
 | `mise run dotfiles` | Clone or fast-forward the external dotfiles and run their installer. |
@@ -145,11 +148,12 @@ a set of `mise bootstrap` parts for the profile.
 | `mise run remote-login-check` | Check Mac Remote Login prerequisites without changes. |
 | `mise run remote-login` | Enable Mac remote access after the security prerequisites are met. |
 | `mise run remote-login-revoke` | Disable Mac Remote Login and clear this account's authorised keys. |
-| `mise run check` | Run the non-installing repository checks. |
+| `mise run check` | Run every non-installing repository check. |
 | `mise run check-shell` | Run the shell behaviour checks. |
 
-Use `--profile personal|work` with component tasks. The installer uses a
-positional profile instead. For task-specific help:
+The component tasks use the recorded profile. Add `--profile personal|work`
+after the task name to choose another one for a single run. For
+task-specific help:
 
 ```bash
 mise run cli --help
@@ -204,24 +208,29 @@ set `dock_tiles = ""` under `[vars]` in `mise.macos.local.toml`. macOS
 preferences cannot be removed from a local file, only overridden with a
 different value; remove the entry from `mise.macos.toml` instead.
 
-Only the Remote Login commands read [defaults.toml](defaults.toml) and a
-`--config` file. Pass that file on each Remote Login command that needs it;
-relative paths resolve from the directory where you invoked the command,
-including through mise. Within each file, `[mac]` or `[linux]` overrides
-shared settings; your file overrides the defaults; the explicit flags take
-precedence. Unknown steps and non-boolean step choices are errors; other
-unknown keys are ignored.
+Only the Remote Login commands read [remote-login.toml](remote-login.toml).
+To change a value, create `remote-login.local.toml` next to it (Git ignores
+it) with the keys you change; a key there replaces the default. There is no
+other settings file and no command-line path. The file cannot set the
+profile or the test-only command substitutions; such keys are refused by
+name.
 
 ### Select a profile
 
-The default profile is `personal`. Select `work` with the installer's
-positional argument, `--profile work` on tasks, or `DEVSETUP_PROFILE`.
-Configuration files cannot set the profile.
+The installer's positional argument (`./install.sh personal` or
+`./install.sh work`) selects the profile and records it in mise's
+per-machine file `~/.config/mise/miserc.local.toml` as `env = ["work"]`.
+mise then loads `mise.work.toml`-style files for every command on this
+machine, so `./install.sh` and the `mise run` tasks need no profile flag.
+The first full setup needs the argument; `--bootstrap-only` does not and
+records nothing. The record never includes the `ssh` environment.
 
-The command-line and environment values must agree. A command-line profile
-does not override a conflicting environment variable. Unset
-`DEVSETUP_PROFILE` or make these values agree before changing profiles.
-Setup does not save your per-run profile choice.
+For a single run, `--profile work` on a task or `DEVSETUP_PROFILE=work`
+wins over the record; `DEVSETUP_PROFILE` is never recorded. The
+command-line and environment values must agree: a conflict is refused
+before anything runs. Unset `DEVSETUP_PROFILE` or make the values agree.
+To change the machine's profile, run `./install.sh work` again; only the
+`env` line of the file changes. Without a record, the tasks use personal.
 
 Profiles select additive package layers and the primary managed GitHub
 SSH key. They do not select separate Git identities or uninstall packages
@@ -257,31 +266,44 @@ Skip `osx` to omit the preferences, the hook and the Dock together.
 
 ## Choose what to install
 
-Use repeated `--skip` options to omit components for one full setup run:
+Use `--skip` with `mise bootstrap` part names to omit parts for one full
+setup run. Repeat the option or separate names with commas:
 
 ```bash
-./install.sh personal --skip app-store --skip osx
+./install.sh personal --skip app-store --skip macos-defaults
+./install.sh personal --skip packages,tools
 ```
 
-Supported names are `ssh`, `cli`, `gui`, `app-store`, `zsh`, `osx` and
-`dotfiles`. All default to enabled except `ssh`. Each name maps onto one or
-more `mise bootstrap` parts, and a part's hooks are skipped with it:
+The part names are those `mise bootstrap --help` lists (`packages`,
+`repos`, `dotfiles`, `macos-defaults`, `user`, `tools`, `task` and the
+others); the installer passes them to `mise bootstrap --skip` unchanged,
+and a part's hooks are skipped with it. Two extra names cover what a part
+cannot: `gui` and `app-store` skip `Brewfile.gui` and `Brewfile.app-store`
+while `Brewfile.cli` still installs. The installer exports
+`DEV_MACHINE_SKIP=gui,app-store` and each GUI and App Store hook prints a
+notice instead of running `brew bundle`. Any other name is refused with
+the valid list.
 
-| Name | mise parts | Also skipped |
+The earlier repository names map onto the new options as follows:
+
+| Old name | Pass now | Effect |
 |---|---|---|
-| `cli` | `packages,tools` | Every Brewfile, the fzf integration and every mise tool. |
-| `gui`, `app-store` | `packages` | Every Brewfile, including `Brewfile.cli`, and the fzf integration. A GUI-only or App Store-only exclusion is not available; remove the lines from the Brewfile instead. |
-| `zsh` | `user` | The login shell and the shell startup blocks. Oh My Zsh and its plugin still install. |
-| `osx` | `macos-defaults` | The preferences, Library visibility, the update check and the Dock. |
-| `dotfiles` | `repos,task` | The `~/.dotfiles` checkout and its installer, and the zsh-autosuggestions clone. |
-| `ssh` | none | Leaves the `ssh` environment out, like answering No. |
+| `cli` | `--skip packages,tools` | Every Brewfile, the fzf integration and every mise tool. |
+| `gui` | `--skip gui` | `Brewfile.gui` in every layer; CLI and App Store files still install. |
+| `app-store` | `--skip app-store` | `Brewfile.app-store`; CLI and GUI files still install. |
+| `zsh` | `--skip user` | The login shell and the shell startup blocks. Oh My Zsh and its plugin still install. |
+| `osx` | `--skip macos-defaults` | The preferences, Library visibility, the update check and the Dock. |
+| `dotfiles` | `--skip-dotfiles` | The `~/.dotfiles` checkout, its installer and the zsh-autosuggestions clone, without the Ubuntu prompt. `--skip repos,task` skips the same parts but keeps the prompt. |
+| `ssh` | `--keep-ssh` | Leaves the `ssh` environment out, like answering No. |
 
-There is no separate exclusion for the Git settings, the global Git ignore
-file, the private directories or the fzf integration. Contradictory
-explicit flags fail. Bootstrap and the prerequisite check cannot be
-skipped. `--skip` is for the installer, not the tasks or `update`. To omit
-a part from a task run, call mise directly, for example
-`mise -E work bootstrap --skip macos-defaults --yes`.
+`--skip dotfiles` now means the mise `dotfiles` part: the managed files
+(the tools link, the global Git ignore file and, with SSH, the SSH client
+files). There is no separate exclusion for the Git settings, the private
+directories or the fzf integration. Contradictory explicit flags fail.
+Bootstrap and the prerequisite check cannot be skipped. `--skip` is for
+the installer, not the tasks or `update`. To omit a part from a task run,
+call mise directly, for example
+`mise bootstrap --skip macos-defaults --yes`.
 
 **Skipping is not uninstalling or revoking.** It leaves previous settings
 and installed software in place. Included components may still install
@@ -320,7 +342,7 @@ agent manually. Run full setup with `--1password-ssh`, or configure SSH
 afterwards:
 
 ```bash
-mise run ssh --profile personal
+mise run ssh
 ```
 
 The direct `ssh` task does not ask for consent again. The Mac app and
@@ -344,7 +366,7 @@ activate mise. To omit it, use `--skip-dotfiles` during setup; to install
 it later, run:
 
 ```bash
-mise run dotfiles --profile personal
+mise run dotfiles
 ```
 
 `[bootstrap.repos]` in `mise.toml` declares `~/.dotfiles` with
@@ -403,7 +425,7 @@ mise run update
 ```
 
 This runs `scripts/update.sh`. It updates installed software, not only the
-current profile's selection, and ignores configuration files and `--skip`.
+current profile's selection, and ignores `--skip`.
 In order, it runs `brew update`, `brew upgrade`, `brew cleanup -s`,
 `mise upgrade --no-prune`, `npm update -g`, `pnpm update -g`, `mas upgrade`
 on macOS and `ollama pull` for each downloaded Ollama model. Ubuntu system
@@ -575,7 +597,7 @@ in Secure ShellFish, you start herdr yourself. For mosh connections, install
 mosh on the Mac from the personal CLI inventory:
 
 ```bash
-mise run cli --profile personal
+mise run cli
 ```
 
 Install herdr from [herdr.dev](https://herdr.dev). SSH commands search
@@ -639,12 +661,12 @@ Only prepare keys for the phone apps you will use:
    pbpaste > .ssh/iphone-shellfish.pub
    ```
 
-4. In your local configuration file, list only the public key files you
-   prepared. Put these settings at the root, before any table heading.
-   For example, if you prepared both keys:
+4. In `remote-login.local.toml` in the repository directory (Git ignores
+   it), list only the public key files you prepared. For example, if you
+   prepared both keys:
 
    ```toml
-   # ~/.config/dev-machine-setup.toml
+   # remote-login.local.toml
    remote_login_public_keys = ["iphone-shellfish.pub", "iphone-moshi.pub"]
    ```
 
@@ -658,7 +680,7 @@ Only prepare keys for the phone apps you will use:
    listed here will be removed. From a fresh local terminal, run:
 
    ```bash
-   ./remote-login.sh --config "$HOME/.config/dev-machine-setup.toml"
+   ./remote-login.sh
    ```
 
    `mise run remote-login` is also available. The command checks keys,
@@ -686,7 +708,7 @@ Only prepare keys for the phone apps you will use:
 For an optional read-only readiness check before enablement, run:
 
 ```bash
-mise run remote-login-check --config "$HOME/.config/dev-machine-setup.toml"
+mise run remote-login-check
 ```
 
 This checks keys, Tailscale and the SSH command path without sudo, writes
@@ -768,7 +790,7 @@ rather than accepting a changed host key blindly.
 
 For changes that leave at least one trusted key, add or remove filenames
 in `remote_login_public_keys`, then rerun the enablement command above
-with the same configuration file from a fresh local terminal.
+from a fresh local terminal.
 It checks the revised inputs before changing access and
 interrupts the listener while validating the effective SSH configuration.
 
@@ -791,16 +813,16 @@ access through an existing SSH or mosh session.
 
 ### Revoke remote access, including offline
 
-Setting `steps.remote-login` to false does not undo earlier enablement.
+Omitting a key file from the list does not undo earlier enablement.
 Revocation needs the bootstrapped mise/Python command interface and sudo,
 but no Homebrew executable, phone keys or working Tailscale connection.
 From a fresh local terminal as your normal user, run:
 
 ```bash
-mise run remote-login-revoke --config "$HOME/.config/dev-machine-setup.toml"
+mise run remote-login-revoke
 ```
 
-This explicitly sets `revoke_remote_login=true`, disables SSH startup,
+This selects revocation for the run, disables SSH startup,
 unloads the listener if present, and backs up then clears your account's
 `~/.ssh/authorized_keys`. It retains the managed SSH server configuration.
 Revocation takes precedence if both enablement and revocation are selected.
@@ -869,7 +891,7 @@ also validate temporary SSH configurations with native `sshd -T`. These
 checks do not prove that every package installs, or that a phone can connect
 while other network paths remain blocked.
 
-Complete bootstrap first. Checks require Python 3.11 or newer and
+Complete bootstrap first. The checks need the locked helper Python and
 [Bats](https://github.com/bats-core/bats-core), the Bash Automated Testing
 System. Both Mac profiles include `bats-core`. On Ubuntu, or before Mac CLI
 installation, install it explicitly through Homebrew:
@@ -885,9 +907,14 @@ mise run check
 mise run check-shell
 ```
 
-Without mise, use `python3 -B scripts/check.py` or `bats tests/shell`.
-The full command fails if Bats is missing; it does not silently skip the
-shell suite.
+`mise run check` runs the shell suite, parses every tracked TOML file and
+validates the Dock list, checks the shell entry points with `bash -n` (and
+ShellCheck when it is installed), runs `scripts/check-security.py`, and
+previews both profiles with `mise config`, `mise bootstrap plan` and
+`mise bootstrap --dry-run` under an empty home directory. Without mise,
+use `bats tests/shell` and `python3 -B scripts/check-security.py`. The
+full command fails if Bats is missing; it does not silently skip the shell
+suite.
 
 ## Troubleshoot setup
 
@@ -895,8 +922,9 @@ shell suite.
 |---|---|
 | Unsupported platform or root refusal | Use native ARM64 macOS or Ubuntu as a normal user with sudo access. Do not bypass the guard. |
 | Missing mise or helper Python | Complete `./install.sh --bootstrap-only`, then start a fresh login shell. |
-| Profile conflict | Make the command and `DEVSETUP_PROFILE` agree. |
-| A local setting is ignored | Put `[vars]` overrides in `mise.local.toml`, or in `mise.macos.local.toml`/`mise.linux.local.toml` for platform values; check with `mise run packages`. Remote Login settings need `--config` on every relevant command. |
+| Profile conflict | Make `--profile` or the installer argument and `DEVSETUP_PROFILE` agree, or unset the variable. |
+| No recorded profile | Run `./install.sh personal` or `./install.sh work` once; later runs and tasks reuse it. |
+| A local setting is ignored | Put `[vars]` overrides in `mise.local.toml`, or in `mise.macos.local.toml`/`mise.linux.local.toml` for platform values; check with `mise run packages`. Remote Login settings go in `remote-login.local.toml` in the repository directory. |
 | `mise bootstrap` refused `~/.dotfiles` or the plugin checkout | Commit, stash or remove local changes and untracked files, resolve divergent history, or correct the declared repository. Do not discard work to bypass the check. |
 | `~/.zshrc` has no mise block | The file is a symlink to the external dotfiles; setup printed a notice and left it alone. Those dotfiles must activate mise and source fzf themselves. |
 | Shell still runs old hooks | Start a fresh login shell with `exec zsh -l`. Sourcing `.zshrc` does not remove previously registered hooks. |

@@ -17,28 +17,29 @@ contract.
 
 | Path | Responsibility |
 | --- | --- |
-| `install.sh`, `scripts/bootstrap-*.sh` | Consent prompts, ARM/OS validation, bootstrap prerequisites and the `mise bootstrap` hand-off |
+| `install.sh`, `scripts/bootstrap-*.sh` | Consent prompts, ARM/OS validation, bootstrap prerequisites, the profile record and the `mise bootstrap` hand-off |
 | `remote-login.sh` | Explicit post-install Remote Login entry point using mise's configured Python |
-| `mise.toml`, `mise.lock`, `.miserc.toml` | Public tasks, the locked helper Python, shared `[vars]`, the managed files, private directories, the Git repositories, the shared hooks (Brewfiles, Oh My Zsh, Git settings), the dotfiles installer task and early mise settings |
+| `mise.toml`, `mise.lock`, `.miserc.toml` | Public tasks and the `check` task, the locked helper Python, shared `[vars]`, the managed files, private directories, the Git repositories, the shared hooks (Brewfiles, Oh My Zsh, Git settings), the dotfiles installer task and early mise settings |
 | `mise.macos.toml`, `mise.linux.toml` | Platform `[vars]`, the login shell, the shell startup blocks, fzf; on macOS also the `packages/mac` Brewfile hooks, the preferences and the Dock |
 | `mise.personal.toml` | Brewfile hooks for the `packages/mac/personal` layer |
 | `mise.ssh.toml` | The managed SSH client configuration and public keys, selected with `-E <profile>,ssh` |
 | `mise/conf.d/tools.toml` | Every mise tool for both platforms and profiles, selected with `os` |
+| `scripts/task-env.sh` | Profile resolution sourced by the bootstrap tasks |
 | `scripts/shell-block.sh` | Marker-delimited block in a shell startup file; skips symlinks with a notice |
 | `scripts/with-sudo-askpass.sh` | Sudo authorisation, password helper and cleanup |
-| `scripts/setup.py`, `scripts/devsetup/cli.py` | Direct CLI for the Remote Login actions |
-| `scripts/devsetup/config.py`, `defaults.toml` | Remote Login settings, OS/profile validation and per-platform paths |
+| `scripts/devsetup/cli.py` | The Python entry point: the three Remote Login actions |
+| `scripts/devsetup/config.py`, `remote-login.toml` | Remote Login settings and the OS/profile/user guards |
 | `packages/` | Literal Homebrew Bundle files per layer; no installation logic |
 | `scripts/update.sh` | Shell maintenance of installed Homebrew, mise, npm/pnpm, App Store and Ollama software |
 | `scripts/devsetup/security.py` | Remote Login |
 | `templates/` | Sources of managed files: the SSH client template, the global Git ignore file and the Remote Login sshd template |
 | `.ssh/` | Public SSH keys only; never private keys |
-| `scripts/check.py`, `scripts/check-*.py` | Non-installing configuration, installer and security checks |
-| `tests/shell/` | Bats behaviour tests for shell entry points, the block helper and sudo authorisation |
+| `scripts/check-security.py` | Non-installing Remote Login checks with stateful substitutes |
+| `tests/shell/` | Bats behaviour tests for the installer, the Remote Login launcher, the block helper, sudo authorisation and the updater |
 
 ## Entry points and configuration
 
-`install.sh [personal|work|--bootstrap-only] [--skip PART]
+`install.sh [personal|work|--bootstrap-only] [--skip NAME[,NAME...]]
 [--1password-ssh|--keep-ssh] [--dotfiles|--skip-dotfiles]` validates the
 profile, OS, architecture and user before bootstrap. Reject Intel, Rosetta,
 non-Ubuntu Linux and root. Bootstrap helpers are sourced, not independent
@@ -51,48 +52,73 @@ command under the sudo wrapper: `mise -E <profile>[,ssh] bootstrap --yes
 introduce an Ansible or pip bootstrap dependency. `--bootstrap-only` runs
 `mise -E <profile> bootstrap --only files,user --yes` instead: private
 directories, the login shell and the shell startup blocks, nothing else.
-`new-mac.sh` remains the Mac bootstrap-only wrapper.
+There is no separate Mac wrapper.
 
-`mise run setup personal|work` invokes the installer. The other tasks run
-`mise -E <profile> bootstrap` for a set of parts and assume bootstrap is
-complete; they do not prompt for feature choices. `packages` previews with
-`--dry-run`; `install` applies every part; `cli` applies
+The profile is remembered per machine. A positional profile on `install.sh`
+is written as `env = ["<profile>"]` to mise's own per-machine selection file
+`$MISE_CONFIG_DIR/miserc.local.toml` (default
+`~/.config/mise/miserc.local.toml`, outside the repository, never
+committed); only that `env` line is written and an existing one is
+replaced. mise then loads `mise.<profile>.toml` for every command on the
+machine without `-E`, in this checkout and elsewhere. For one run an
+explicit choice wins: the positional profile or `--profile` on a task, or
+`DEVSETUP_PROFILE`; the two must agree, and a conflict is refused before
+any installation. `DEVSETUP_PROFILE` is never recorded. With neither, the
+recorded profile applies. With nothing recorded, full setup requires the
+positional profile, `--bootstrap-only` uses personal (its parts are
+profile-independent and it records nothing) and the tasks use personal.
+The `ssh` environment is selected per run by consent, `--1password-ssh` or
+`mise run ssh`; it is never recorded.
+
+`mise run setup [personal|work]` invokes the installer. The other tasks
+source `scripts/task-env.sh`, which sets the environment for the run from
+`--profile`, `DEVSETUP_PROFILE`, then the `MISE_ENV` that mise passes to
+the task (the recorded profile or `-E` on `mise run`), then `personal`.
+They run `mise -E <env> bootstrap` for a set of parts and assume bootstrap
+is complete; they do not prompt for feature choices. `packages` previews
+with `--dry-run`; `install` applies every part; `cli` applies
 `packages,dotfiles,tools,final-hook`; `git` applies `dotfiles`; `zsh`
 applies `repos,user`; `dotfiles` applies `repos,task`; `osx` applies
-`macos-defaults`; `ssh` adds `-E ssh` and applies `files,dotfiles`. A
-part's hooks run with it. Tasks that may need sudo (`install`, `zsh`, `osx`)
-run under the sudo wrapper. They take `--profile personal|work` through a
-usage flag or `DEVSETUP_PROFILE`; default to personal on each invocation.
-The installer uses a positional profile and must reject an environment
-conflict before any installation. Pass the effective profile to
-`mise bootstrap` as `-E`.
+`macos-defaults`; `ssh` adds `,ssh` and applies `files,dotfiles`. A part's
+hooks run with it. Tasks that may need sudo (`install`, `zsh`, `osx`) run
+under the sudo wrapper.
 
 Setup values live in the mise files: `[vars]` holds the Git identity, the
 Homebrew prefix, the agent socket, the key filenames and the Dock list;
 `[bootstrap.repos]` holds the dotfiles source and revision. A machine
 overrides them in the gitignored `mise.local.toml` (a later file wins for
-`[vars]` and replaces a repository entry by path). `defaults.toml` holds
-only what the Remote Login commands read; load it, then the single optional
-`--config` file of those commands. Apply the selected `[mac]` or `[linux]`
-table within each file after its shared keys. The override file replaces
-defaults; explicit feature flags override configuration. Unknown keys pass
-through untouched. Do not let local TOML files enable the private security
-command-injection seams used by tests. Preserve the documented
-`remote_login_sshd` list and `remote_login_launchctl` executable overrides
-for isolated validation. The profile comes only from the command line or
-`DEVSETUP_PROFILE`, never from a settings file. The canonical `[steps]`
-table contains only `remote-login`. Merge it by key.
+`[vars]` and replaces a repository entry by path) or, for platform values,
+`mise.<os>.local.toml`. `remote-login.toml` holds only what the Remote
+Login commands read: the phone key list, the source addresses, the managed
+sshd file and the Tailscale path. `config.py` loads it, then the
+gitignored `remote-login.local.toml` in the checkout when it exists; a key
+in the local file replaces the default. There is no other settings file
+and no `--config` option. Neither file may set detected values (`home`,
+`repo_dir`, `platform`, `user`, `profile`) or the per-run choices (`steps`,
+`revoke_remote_login`). Do not let local TOML files enable the private
+security command-injection seams used by tests: `config.py` refuses the
+test-only keys by name, and `check-security.py` injects them by calling
+`security.run` with a dictionary, never through a file. Preserve the
+documented `remote_login_sshd` list and `remote_login_launchctl`
+executable overrides, which the local file may set for isolated
+validation. The profile comes from the command line, `DEVSETUP_PROFILE` or
+the recorded mise profile, never from `remote-login.toml`.
 
-`--skip` names are repository names that the installer maps onto mise
-parts; a part's hooks are skipped with it: `cli` → `packages,tools`; `gui`
-or `app-store` → `packages` (also the CLI Brewfiles); `zsh` → `user`
-(login shell and shell blocks; Oh My Zsh and its plugin still install);
-`osx` → `macos-defaults` (preferences, Library visibility, update check and
-Dock); `dotfiles` → `repos,task` (also the zsh-autosuggestions clone);
-`ssh` keeps `-E ssh` out. Other names are usage errors; there is no
-separate `git`, `fzf` or `dock` exclusion. Contradictory explicit flags
-fail. Bootstrap and the prerequisite check cannot be skipped. Revocation is
-a separate operation and must never be suppressed by a step exclusion.
+`--skip` takes `mise bootstrap` part names, validated against the list in
+`mise bootstrap --help` and passed through unchanged; a part's hooks are
+skipped with it. Two repository names are added for what parts cannot
+express: `gui` and `app-store`. The installer exports
+`DEV_MACHINE_SKIP=<names>` and each `Brewfile.gui` and
+`Brewfile.app-store` hook command tests it with a `case`, printing a
+notice instead of running `brew bundle`; `Brewfile.cli` still installs.
+Other names are refused with the valid list. The old repository names map
+as: `cli` → `packages,tools`; `gui` → `gui`; `app-store` → `app-store`;
+`zsh` → `user`; `osx` → `macos-defaults`; `dotfiles` → `--skip-dotfiles`
+(`repos,task` without the prompt); `ssh` → `--keep-ssh`. `--skip dotfiles`
+now means the mise `dotfiles` part (the managed files). Contradictory
+explicit flags fail. Bootstrap and the prerequisite check cannot be
+skipped. Revocation is a separate operation and must never be suppressed
+by a skip.
 
 The installer resolves consent before bootstrap: the SSH choice adds the
 `ssh` environment, the dotfiles choice adds `--skip repos,task`. The
@@ -105,8 +131,8 @@ hooks set `HOMEBREW_NO_AUTO_UPDATE=1`; the installer's prerequisite
 bootstrap has its own refresh and there is no other. Run mise as the normal
 user; mise and the hooks escalate individual operations with sudo.
 
-`mise run packages --profile personal|work` is read-only: it runs
-`mise -E <profile> bootstrap --dry-run`, which prints every hook command,
+`mise run packages [--profile personal|work]` is read-only: it runs
+`mise -E <env> bootstrap --dry-run`, which prints every hook command,
 the files, repositories, preferences and tools that would change. Hooks are
 printed, not run. Root task settings must prevent automatic runtime
 installation during previews and checks. `--check` on the Remote Login
@@ -116,9 +142,10 @@ commands bypasses the sudo wrapper and reports the preflight only.
 
 The SSH prompt defaults to No. Without a terminal, preserve SSH unless
 `--1password-ssh` is explicit. Consent selects the `ssh` mise environment
-for that run; nothing selects it by default. Declining must leave existing
-SSH files and agents untouched, including a configuration from an earlier
-opt-in. The explicit `mise run ssh` task opts in without a prompt.
+for that run; nothing selects it by default and the record never includes
+it. Declining must leave existing SSH files and agents untouched, including
+a configuration from an earlier opt-in. The explicit `mise run ssh` task
+opts in without a prompt.
 
 `mise.ssh.toml` declares `~/.ssh/config` as a template of
 `templates/ssh_config` with mode `0600` and the two public keys as `0600`
@@ -139,9 +166,10 @@ client agent. Do not install the Linux desktop app during headless bootstrap.
 
 Dotfiles default to enabled on both OSes. Interactive Ubuntu full setup asks
 `Install your dotfiles? [Y/n]` before bootstrap. Enter and unattended runs
-keep the enabled default. Explicit dotfiles flags and `--skip dotfiles` skip
-the prompt. Bootstrap-only runs neither ask about nor install dotfiles.
-`mise run dotfiles` is the later explicit installation path.
+keep the enabled default. The explicit `--dotfiles` and `--skip-dotfiles`
+flags skip the prompt; `--skip repos` or `--skip task` are raw part
+exclusions and do not. Bootstrap-only runs neither ask about nor install
+dotfiles. `mise run dotfiles` is the later explicit installation path.
 
 Delegate installation to the external dotfiles repository's `install.sh`,
 which `[tasks.bootstrap]` runs as the last bootstrap step. Keep portable
@@ -166,9 +194,10 @@ It must not require the Homebrew executable. Its `dotfiles.toml` file must
 coexist with this repository's `dev-machine-setup.toml` symlink under a real
 `~/.config/mise/conf.d` directory. mise creates that symlink from the
 `[dotfiles]` entry in `mise.toml`; it refuses to replace an existing regular
-file there. Apart from that link and the SSH tracking entry, setup never
-writes the user's own mise files. The entry targets mise's default global
-directory; `MISE_CONFIG_DIR` and `XDG_CONFIG_HOME` do not move it.
+file there. Apart from that link, the SSH tracking entry and the `env`
+line of `miserc.local.toml`, setup never writes the user's own mise files.
+The entry targets mise's default global directory; `MISE_CONFIG_DIR` and
+`XDG_CONFIG_HOME` do not move it.
 
 Shell startup files may belong to the external dotfiles, so no
 `[dotfiles]` block entry or `[bootstrap.mise_shell_activate]` entry targets
@@ -276,12 +305,14 @@ part. The external dotfiles export `PNPM_HOME` for zsh; the Ubuntu
 `~/.bashrc` block exports it for bash. Native prerequisites of selected
 components remain allowed; exclusions are not an uninstall/package-denial
 policy. Hooks run in the installer's environment, not with `[tools]` on
-`PATH`; the `mise activate` line in the shell blocks uses the absolute path
-of the mise that ran bootstrap.
+`PATH`; they see the installer's exported variables such as
+`DEV_MACHINE_SKIP`. The `mise activate` line in the shell blocks uses
+`$HOME/.local/bin/mise`, the link bootstrap keeps, so the block is
+byte-identical whichever mise ran bootstrap.
 
 `mise run update` runs `scripts/update.sh`, a Bash script without Python
 or the sudo wrapper. It maintains all installed software regardless of
-profile or step settings; `--skip` and `--config` do not apply. In order:
+profile; `--skip` does not apply. In order:
 `brew update`, `brew upgrade` with Homebrew's default non-greedy semantics,
 `brew cleanup -s`, `mise upgrade --no-prune`, `npm update -g` and
 `pnpm update -g` through `mise exec`, `mas upgrade` on macOS and
@@ -299,10 +330,10 @@ installation, and local files that enable that step have no effect on it.
 
 After installation, use `./remote-login.sh`. Keep this launcher thin:
 resolve the repository's Python through mise, then invoke the existing
-`remote-login` action. That action checks prerequisites before sudo or
-service changes; do not chain a duplicate preflight. Find mise on PATH or
-at the bootstrap link `~/.local/bin/mise`. Preserve the caller's directory
-for relative configuration paths. Keep the direct mise tasks available.
+`remote-login` action in `scripts/devsetup/cli.py`, the only Python entry
+point. That action checks prerequisites before sudo or service changes; do
+not chain a duplicate preflight. Find mise on PATH or at the bootstrap link
+`~/.local/bin/mise`. Keep the direct mise tasks available.
 
 Tailscale's Mac app is in the GUI inventory. Users must still sign in,
 prepare phone keys and review policy/firewall restrictions. Before
@@ -317,10 +348,10 @@ deploy configuration, validate effective SSH settings or prove network
 isolation. It does not require the Homebrew executable.
 
 `mise run remote-login` explicitly enables access. The separate
-`mise run remote-login-revoke` opts in with `revoke_remote_login=true`.
-Revocation wins if both choices are true, including the direct
-`remote-login --revoke-remote-login` command. A false step leaves earlier
-changes in place. Enablement and revocation reject non-Mac, root, invalid profiles
+`mise run remote-login-revoke` sets the per-run `revoke_remote_login`
+choice, as does the direct `remote-login --revoke-remote-login` command;
+revocation wins over enablement in the same run. Neither choice is stored
+in a file. Enablement and revocation reject non-Mac, root, invalid profiles
 and detected SSH sessions (`SSH_CONNECTION`, `SSH_CLIENT`, `SSH_TTY`). These
 checks are an operator guard, not proof of local-console use. Never bypass
 them by clearing variables.
@@ -387,8 +418,14 @@ Update this guide and README when
 commands or ownership change. Do not add compatibility aliases for removed
 Make targets or Ansible tags.
 
-After code or inventory changes, run `mise run check`, or
-`python3 -B scripts/check.py` with Python 3.11 or newer and `bats` on PATH.
+After code or inventory changes, run `mise run check`. It is a mise task
+(`[tasks.check]` in `mise.toml`) that depends on `check-shell` (Bats),
+then parses every tracked TOML file and validates the Dock list, runs
+`bash -n` and, when installed, ShellCheck on the shell entry points, runs
+`python3 -B scripts/check-security.py`, and runs `mise -E personal|work
+config`, `mise -E personal bootstrap plan` and `mise -E work bootstrap
+--dry-run` with an empty `HOME` so the machine's own files never make a
+preview refuse. It needs the locked Python and `bats` on PATH.
 Homebrew `bats-core` is required in both Mac profiles. On Ubuntu or before
 Mac CLI installation, install that test dependency explicitly. Missing
 Bats must fail the full check command, not silently omit shell coverage.
@@ -400,19 +437,20 @@ and substitute privileged commands; do not assert source text, exact
 internal command sequences or copied argument echoes. Move overlapping
 shell cases out of the Python checks instead of maintaining duplicate tests.
 
-Checks use temporary directories and substitute commands. They cover the
-four OS/profile pairs for the Remote Login settings, the installer's
-terminal prompts, opt-ins, `--skip` mapping and `mise bootstrap` hand-off,
-the shell block helper, headless sudo, Remote Login backups and failure
-propagation. On macOS they also run real unprivileged `sshd -T` gates.
-Stateful service substitutes cover stop-before-write, rollback, offline final-
-key revocation and partial activation failures without changing host services.
-The mise declarations are checked by mise itself: inspect them with
-`mise run packages --profile personal` and `mise run packages --profile
-work` (`mise -E <profile> bootstrap --dry-run`), `mise -E <profile> config`
-for the loaded files and `mise bootstrap status` for drift. `mise run check`
-parses every TOML file and validates the Dock list. ShellCheck can check
-the Bash entry points.
+Checks use temporary directories and substitute commands. Bats covers the
+installer's refusals, the profile record and precedence, the `--skip`
+translation and the `mise bootstrap` hand-off; the Remote Login launcher
+with the real `cli.py`, including the local settings file, the refused
+test-only keys and the prerequisite check before any service change; the
+shell block helper; headless sudo; and the updater. `check-security.py`
+covers Remote Login backups and failure propagation; on macOS it also runs
+real unprivileged `sshd -T` gates. Stateful service substitutes cover
+stop-before-write, rollback, offline final-key revocation and partial
+activation failures without changing host services. The mise declarations
+are checked by mise itself: inspect them with `mise run packages
+[--profile personal|work]` (`mise -E <env> bootstrap --dry-run`),
+`mise -E <env> config` for the loaded files and `mise bootstrap status`
+for drift.
 
 Use disposable machines or containers for real bootstrap/install/update and
 shell checks. Do not provision the development host to validate a change.
