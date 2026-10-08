@@ -268,9 +268,6 @@ def _enable_remote_login(config: dict, check: bool) -> None:
     if config.get("revoke_remote_login"):
         _revoke_remote_login(config, check)
         return
-    if not config["steps"]["remote-login"]:
-        print("Remote Login not selected; existing Remote Login access is unchanged.", flush=True)
-        return
     _require_mac(config)
     if not check:
         _require_local_console("remote-login")

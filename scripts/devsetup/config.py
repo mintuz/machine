@@ -20,7 +20,7 @@ SETTINGS_FILES = ("remote-login.toml", "remote-login.local.toml")
 LIST_KEYS = ("remote_login_public_keys", "remote_login_sources")
 PATH_KEYS = ("remote_login_sshd_file", "tailscale_cli")
 # Detected or chosen per run; a settings file cannot set them.
-RUN_KEYS = ("home", "repo_dir", "platform", "user", "profile", "steps", "revoke_remote_login")
+RUN_KEYS = ("home", "repo_dir", "platform", "user", "profile", "revoke_remote_login")
 # These substitutions belong to isolated direct module tests, not settings files.
 # The remote_login_sshd list and remote_login_launchctl path stay available for validation.
 TEST_ONLY_KEYS = (
@@ -132,9 +132,7 @@ def load(*, repo_dir: Path, profile: str | None = None, revoke: bool = False) ->
             config.update(_read_settings(path))
     account = pwd.getpwuid(os.getuid())
     home = Path(os.environ.get("HOME") or account.pw_dir).resolve()
-    # The command is the selection: security.py's remote-login step switch is always on.
     config.update(platform=platform, home=str(home), repo_dir=str(repo_dir), user=account.pw_name,
-                  profile=_select_profile(profile, os.environ), revoke_remote_login=revoke,
-                  steps={"remote-login": True})
+                  profile=_select_profile(profile, os.environ), revoke_remote_login=revoke)
     _validate(config, home)
     return config
