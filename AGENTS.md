@@ -191,7 +191,8 @@ app of the cask reports a plain numeric version equal to or newer than the
 Homebrew version. Mac App Store installation requires
 sign-in; skip installed App Store apps and do not attempt IDs that the App
 Store lookup cannot find. Remove disabled `tldr` before installing its
-replacement `tlrc`.
+replacement `tlrc`. Remove the conflicting `claude-code@latest` cask before
+installing its replacement `claude-code` cask.
 
 The `node` action solely owns Node, pnpm, all `npm:` mise providers,
 global-package migration and pnpm shell/global settings. `cli` owns

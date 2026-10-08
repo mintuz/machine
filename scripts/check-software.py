@@ -494,13 +494,25 @@ with tempfile.TemporaryDirectory() as directory:
     assert machine.calls() == [] and snapshot(machine.base) == before
 print("PASS: required CLI failures stop setup; optional failures are reported; package installs need Homebrew")
 
-# The disabled tldr formula is removed before tlrc.
+# Conflicting replaced packages are removed before their replacements install.
 with tempfile.TemporaryDirectory() as directory:
     machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
     (machine.prefix / "Cellar/tldr").mkdir(parents=True)
     fails(lambda: machine.run("cli", FAKE_FAIL="uninstall tldr"), "tldr")
     assert not any(call.startswith(BUNDLE) for call in machine.calls())
-print("PASS: a failed tldr removal stops new CLI package installation")
+for fail in ("", "uninstall --cask claude-code@latest"):
+    with tempfile.TemporaryDirectory() as directory:
+        machine = Machine(directory, repo=fixture_repo(directory, CLI_REPO))
+        (machine.prefix / "Caskroom/claude-code@latest/1.0").mkdir(parents=True)
+        if fail:
+            fails(lambda: machine.run("cli", FAKE_FAIL=fail), "claude-code@latest")
+            assert not any(call.startswith(BUNDLE) for call in machine.calls())
+        else:
+            machine.run("cli")
+            calls = machine.calls()
+            removal = calls.index("brew uninstall --cask claude-code@latest")
+            assert removal < next(i for i, call in enumerate(calls) if call.startswith(BUNDLE))
+print("PASS: replaced tldr and claude-code@latest are removed first; a failed removal stops installs")
 
 # GUI and App Store: Mac only; installed casks upgrade greedily, others (including
 # stale Caskroom records without an installed version) install with --adopt.
