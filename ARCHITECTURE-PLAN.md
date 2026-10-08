@@ -1,15 +1,17 @@
 # Provisioning review: why the custom code exists and how to remove most of it
 
-> **Status: research and plan, not the implementation contract.** This
-> document describes the repository at commit
-> `11f544bfeb16d970068a96cfd7e214f1d2f9b815` on 2026-10-08. `AGENTS.md`
-> remains the maintenance contract until the owner approves a phase below.
-> Two research agents produced independent findings: Astra (outside-in
-> landscape survey) and Fable (inside-out code audit). A read-only scout
-> produced a per-file fact sheet. The raw findings are in
-> `docs/research/`. This document merges them and records where they
-> disagree. Line counts come from `wc -l` on the commit above. Post-migration
-> counts are estimates and are labelled as such.
+> **Status: implemented on branch `mise-bootstrap-migration` (commits
+> `8476146`..`66f7cb6`, 2026-10-08); awaiting the owner's Mac test.**
+> Sections 1-8 describe the repository at commit
+> `11f544bfeb16d970068a96cfd7e214f1d2f9b815`, before the migration, and
+> are kept as the record of why. Section 13 records the outcome and the
+> owner's Mac test checklist. `AGENTS.md` on the branch describes the
+> code as it is now. Two research agents produced independent findings:
+> Astra (outside-in landscape survey) and Fable (inside-out code audit).
+> A read-only scout produced a per-file fact sheet. The raw findings are in
+> `docs/research/`. Line counts in sections 1-8 come from `wc -l` on the
+> pre-migration commit; post-migration estimates there are labelled as
+> such, and section 13 gives the measured result.
 
 ## 1. Summary
 
@@ -391,3 +393,55 @@ Alternatives:
 - comtrya: https://github.com/comtrya/comtrya ; dotbot: https://github.com/anishathalye/dotbot ; Pkl: https://pkl-lang.org/
 - Reference setups: https://github.com/geerlingguy/mac-dev-playbook , https://github.com/dustinlyons/nixos-config , https://github.com/twpayne/dotfiles
 - sudo manual (`-A`, `SUDO_ASKPASS`, `-v`): https://raw.githubusercontent.com/sudo-project/sudo/main/docs/sudo.man.in
+
+## 13. Outcome (2026-10-08) and the owner's Mac test
+
+### What was done
+
+Phases 1-5 ran as separate subagents in sequence, each proven on fresh
+Ubuntu 24.04 aarch64 containers (`tests/containers/ubuntu.Dockerfile`,
+personal and work, first run and idempotent second run) and with the
+host's read-only checks (`mise run check`, `mise -E <env> bootstrap plan`,
+`mise -E <env> bootstrap --dry-run` under a throwaway `HOME`). Phase 6
+(mise's native bottle installer) was not attempted: its gate, mise
+documenting `post_install` support, is not met. A read-only review of the
+whole branch found ten issues; all are fixed in commits `0cd7b09`..`66f7cb6`.
+
+Measured result (`wc -l`, commit `66f7cb6`):
+
+| | Before (`11f544b`) | After | Plan estimate |
+| --- | --- | --- | --- |
+| Production shell + Python | 2,353 | 1,364 | ~1,050-1,100 |
+| Checks (Python + Bats) | 2,214 | 1,375 | ~1,250 |
+| Of production, Remote Login contract (`security.py`, `config.py`, `cli.py`, `remote-login.sh`, sudo wrapper) | 830 | 925 | — |
+
+Deleted: `scripts/devsetup/{host,software}.py`, `scripts/{setup,check,check-platforms,check-software}.py`, `new-mac.sh`, `defaults.toml`, `packages/*/tools.*.toml`. Added: `mise.macos.toml`, `mise.linux.toml`, `mise.personal.toml`, `mise.ssh.toml`, `mise/conf.d/tools.toml`, `.miserc.toml`, `remote-login.toml`, `scripts/task-env.sh` (26), `scripts/shell-block.sh` (42), two Bats files, the container recipe.
+
+Deviations from sections 7-9, all recorded in `AGENTS.md`:
+
+- Global tool availability uses a `[dotfiles]` symlink into `~/.config/mise/conf.d/`, not `--adopt` (which would relocate the checkout). The entry cannot honour `MISE_CONFIG_DIR`/`XDG_CONFIG_HOME`.
+- `[bootstrap.mise_shell_activate]` is not used: on 2026.10.3 it refuses a symlinked `~/.zshrc`, which every machine has after the dotfiles install. `scripts/shell-block.sh` (decision 3) owns activation too.
+- `[bootstrap.user]` runs `chsh` without sudo and prompts for a password; a `pre-user` hook sets the shell with `vars.sudo` first and `[bootstrap.user]` verifies.
+- Oh My Zsh and the autosuggestions plugin are installed by the `pre-user` hook (plain `git clone`/`pull --ff-only`), not by `[bootstrap.repos]`: repos run before `pre-user` and the upstream installer refuses an existing `~/.oh-my-zsh`. `--skip user` skips them, as the old `zsh` step did.
+- Hook order within a phase is load order (`mise.toml` → `mise.macos.toml` → `mise.<env>.toml`), so Brewfiles apply shared → mac → shared/profile → mac/profile. Identical result for today's files.
+- `expose-animation-duration` is set from the `post-defaults` hook with a `defaults read` guard: `-float` stores 32-bit and mise compares at 64-bit, so a declared entry never converges.
+- The mise download keeps the repository-pinned SHA-256 (phase 5): `mise.run` verifies against a checksum file from the same release, and packslip needs its own bootstrap download.
+- The recorded profile (`miserc.local.toml`, decision 1) is a global mise environment, so `mise.work.toml` files in other projects also load.
+
+### Owner's Mac test (not executed by the agents)
+
+Run on a disposable Mac VM first, then on a real machine. Expected result for each step is in brackets.
+
+1. On an existing Mac provisioned by the old code, once: `rm ~/.config/mise/conf.d/dev-machine-setup.toml` (old generated regular file; mise refuses to replace it with the symlink).
+2. Fresh VM: `./install.sh personal` [exit 0; one sudo prompt; `~/.config/mise/miserc.local.toml` contains `env = ["personal"]`; `brew bundle` for shared and mac `Brewfile.cli`, then `Brewfile.gui`, `mdimport`, `Brewfile.app-store`; App Store items fail without sign-in and appear under "These items need attention" at the end with exit 1; everything after them still ran].
+3. `mise bootstrap macos defaults status` [all entries `set`]; check `defaults read com.apple.finder _FXShowPosixPathInTitle` (1), `com.apple.dock autohide-delay` (0), `com.apple.screensaver askForPasswordDelay` (0), `com.apple.dock expose-animation-duration` (0.1). Terminal and screencapture domains may need Full Disk Access.
+4. Dock: order matches `vars.dock_tiles` in `mise.macos.toml`; spacers present; a missing app prints `Dock: could not add …; continuing.` and does not abort.
+5. `chflags` left `~/Library` visible; `/Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled` is 1; login shell `/bin/zsh` (`dscl . -read /Users/$USER UserShell`).
+6. Shell: a fresh terminal has `brew`, `mise`, `node`, `go`, `deno`, `xcodes` on PATH; `~/.zshrc` is the dotfiles symlink; `~/.config/mise/conf.d/` holds the `dev-machine-setup.toml` symlink and the dotfiles' `dotfiles.toml`.
+7. Second run with no argument: `./install.sh` [exit 0 apart from the App Store issue list; `mise bootstrap plan --detailed-exitcode` exits 0; `~/.zshrc: left unchanged because it is a symlink…` notices; no Dock change].
+8. Skips: `./install.sh personal --skip gui --skip app-store` [cli Brewfiles still run, GUI/App Store hooks print their skip notice]; `--skip macos-defaults` [no defaults, no Dock]; `--skip user` [no login shell change, no Oh My Zsh].
+9. SSH: `mise run ssh` on a machine with an existing `~/.ssh/config` [`mise dot track` records it; `~/.ssh/config` rendered with the 1Password Group Containers socket, mode 0600, profile key primary; `mise dot history --path ~/.ssh/config` shows the previous file; `mise dot rollback` restores it].
+10. Tasks without flags after the record: `mise run packages`, `mise run git`, `mise run osx`, `mise run cli` [use the recorded profile; `mise run packages --profile work` with `DEVSETUP_PROFILE=personal` is refused].
+11. `mise run check` with Homebrew `shellcheck` installed [passes; nothing installed or changed].
+12. Remote Login, unchanged by the migration: `mise run remote-login-check` [launches; reports Tailscale/phone-key state]; `remote-login.sh` reads `remote-login.toml` and the gitignored `remote-login.local.toml`. Do not enable Remote Login merely to test the migration.
+13. `mise run update` [Homebrew, `mise upgrade --no-prune`, npm/pnpm, mas, Ollama; `mise.lock` unchanged].
