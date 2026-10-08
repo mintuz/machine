@@ -355,3 +355,11 @@ activation. A real enable run needs sudo and phone keys; revocation needs sudo
 but not keys or Tailscale. Only an actual phone connection and denied network
 paths establish end-to-end access and isolation. Never activate or revoke the
 development host's Remote Login merely to validate an edit.
+
+## Approved architecture migration
+
+`ARCHITECTURE-PLAN.md` holds the 2026-10-08 provisioning review and a phased
+migration to `mise bootstrap`, approved by the owner with the contract
+decisions in its section 9. `docs/research/` holds the raw findings. Each
+phase updates this guide when its code lands; until then this guide
+describes the current code, not the plan.
