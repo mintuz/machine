@@ -210,14 +210,15 @@ run = "python scripts/devsetup/cli.py remote-login-revoke"
 raw = true
 
 # Non-installing checks. The mise previews run with an empty HOME so the
-# machine's own files never make the preview refuse.
+# machine's own files never make the preview refuse. The trust store lives in
+# the state directory, so the real one is kept.
 [tasks.check]
 description = "Run the shell tests, the TOML, shell syntax and Remote Login checks and the mise previews"
 depends = ["check-shell"]
 run = '''
 set -eu
 echo "Checking the TOML files"
-git ls-files -z '*.toml' | xargs -0 python -B -c '
+python -B -c '
 import sys, tomllib
 for path in sys.argv[1:]:
     with open(path, "rb") as source:
@@ -226,7 +227,7 @@ tiles = tomllib.load(open("mise.macos.toml", "rb"))["vars"]["dock_tiles"].strip(
 bad = [line for line in tiles if line != "spacer" and not (line.startswith("/") and line.endswith(".app"))]
 if bad:
     sys.exit("mise.macos.toml: each dock_tiles line must be an absolute .app path or spacer: " + ", ".join(bad))
-'
+' .miserc.toml *.toml mise/conf.d/*.toml
 echo "Checking the shell entry points"
 for script in install.sh remote-login.sh scripts/*.sh; do bash -n "$script"; done
 if command -v shellcheck >/dev/null 2>&1; then
@@ -239,9 +240,11 @@ python -B scripts/check-security.py
 echo "Checking the mise previews"
 home="$(mktemp -d)"
 trap 'rm -rf "$home"' EXIT
-for profile in personal work; do HOME="$home" "{{ mise_bin }}" -E "$profile" config; done
-HOME="$home" "{{ mise_bin }}" -E personal bootstrap plan
-HOME="$home" "{{ mise_bin }}" -E work bootstrap --dry-run
+export MISE_STATE_DIR="${MISE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/mise}"
+export HOME="$home" MISE_TRUSTED_CONFIG_PATHS="$home"
+for profile in personal work; do "{{ mise_bin }}" -E "$profile" config; done
+"{{ mise_bin }}" -E personal bootstrap plan
+"{{ mise_bin }}" -E work bootstrap --dry-run
 echo "All checks passed. No packages or machine settings were changed."
 '''
 
