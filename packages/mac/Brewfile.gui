@@ -15,6 +15,7 @@ cask "rcmd"
 cask "hammerspoon"
 cask "raycast"
 cask "thaw"
+cask "grammarly-desktop"
 
 # Privacy, security, and authentication
 cask "protonvpn"
