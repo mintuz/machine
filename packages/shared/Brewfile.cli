@@ -12,6 +12,7 @@ brew "git"
 brew "worktrunk"
 brew "gh"
 brew "lazygit"
+brew "gitleaks"
 
 # Core shell utilities
 brew "curl"
@@ -54,5 +55,6 @@ brew "glances"
 
 # AI and app CLIs
 brew "opencode"
+brew "rtk"
 tap "can1357/tap"
 brew "can1357/tap/omp", trusted: true
