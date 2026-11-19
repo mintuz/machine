@@ -1,2 +1,20 @@
 # Remote shell sessions from a phone (remote-login)
 brew "mosh"
+
+# Infrastructure and cloud
+brew "ansible"
+brew "awscli"
+brew "cloudflared"
+brew "livekit"
+
+# Git forges
+brew "forgejo-cli"
+brew "tea"
+
+# Languages and package managers
+brew "rust"
+brew "uv"
+
+# App and agent CLIs
+brew "asc"
+brew "agent-browser"
