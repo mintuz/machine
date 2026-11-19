@@ -58,3 +58,5 @@ brew "opencode"
 brew "rtk"
 tap "can1357/tap"
 brew "can1357/tap/omp", trusted: true
+tap "PeonPing/tap"
+brew "PeonPing/tap/peon-ping", trusted: true
