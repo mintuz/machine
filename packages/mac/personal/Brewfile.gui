@@ -10,3 +10,9 @@ cask "discord"
 # Media
 cask "vlc"
 cask "downie"
+
+# Browsers
+cask "ungoogled-chromium"
+
+# Utilities
+cask "gas-mask"
